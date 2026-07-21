@@ -1,0 +1,2 @@
+# zippy
+Clippy for Zig
