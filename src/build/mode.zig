@@ -283,7 +283,7 @@ pub fn run(a: RunArgs) !u8 {
     // free used to happen right after `lintFile`'s own render loop.
     defer {
         for (merged.items) |m| {
-            if (m.kind == .lint) a.gpa.free(m.diag.message);
+            if (m.kind == .lint) m.diag.deinit(a.gpa);
         }
     }
 

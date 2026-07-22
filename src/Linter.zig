@@ -75,8 +75,9 @@ pub fn run(
     // 2. Lints. No arena here: `Context.report` dupes messages with `gpa`
     // directly, so every diagnostic (parse error or lint) has one uniform
     // owner and lifetime -- the caller of `run` frees each `diags` item
-    // with `gpa` exactly once, with no separate arena teardown to order
-    // relative to that.
+    // with `Diagnostic.deinit(gpa)` exactly once (message plus any owned
+    // `fix.replacement`), with no separate arena teardown to order relative
+    // to that.
     var ctx: Context = .{
         .gpa = gpa,
         .source = source,

@@ -27,11 +27,36 @@ fix: ?Fix = null,
 /// source with `replacement`. Separate from the diagnostic's own
 /// `byte_offset`/`end_offset` (where the message points) -- the fix span can
 /// differ (e.g. the message points at a name, the fix deletes the whole decl).
+///
+/// `title` is the imperative label an LSP code action shows for this fix (e.g.
+/// "remove unused declaration"); it defaults to `""` so the CLI `--fix`
+/// applier (which never shows a title) and existing `Fix` literals are
+/// unaffected. A fixable lint sets it to a static string.
+///
+/// `replacement` is either a static `""` (deletion, never freed) or a
+/// gpa-owned non-empty slice freed by `Diagnostic.deinit`.
 pub const Fix = struct {
     start: usize,
     end: usize,
     replacement: []const u8,
+    title: []const u8 = "",
 };
+
+/// Frees everything this diagnostic owns: its `message` (always gpa-owned, see
+/// `Context.report`), and -- only when non-empty -- its `fix.replacement`.
+///
+/// The `replacement.len > 0` guard encodes the ownership convention: a fix's
+/// replacement is EITHER a static `""` (a pure deletion, e.g. `unused_decl`),
+/// which is never heap-allocated and must not be freed, OR a gpa-owned
+/// non-empty string (a reconstructed edit, e.g. `redundant_else`), which is.
+/// Callers that own a diagnostics list free each entry with this instead of a
+/// bare `gpa.free(d.message)`, so an owned replacement never leaks.
+pub fn deinit(d: Diagnostic, gpa: std.mem.Allocator) void {
+    gpa.free(d.message);
+    if (d.fix) |f| {
+        if (f.replacement.len > 0) gpa.free(f.replacement);
+    }
+}
 
 /// A 1-based line/column plus the `[line_start, line_end)` byte range of
 /// that line (excluding the newline). Named (rather than an inline anonymous
@@ -208,4 +233,35 @@ test "render with use_color=true adds ANSI escapes without changing text" {
     // color escapes: bold-red error word and at least one reset.
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[1;31m") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[0m") != null);
+}
+
+test "deinit frees an owned (non-empty) replacement without leaking" {
+    const gpa = std.testing.allocator;
+    const msg = try gpa.dupe(u8, "some message");
+    const repl = try gpa.dupe(u8, "\n    return 2;");
+    const d: Diagnostic = .{
+        .path = "t.zig",
+        .byte_offset = 0,
+        .end_offset = 4,
+        .severity = .warn,
+        .lint = "redundant_else",
+        .message = msg,
+        .fix = .{ .start = 0, .end = 10, .replacement = repl, .title = "x" },
+    };
+    d.deinit(gpa); // frees msg + repl; std.testing.allocator fails the test on any leak
+}
+
+test "deinit leaves a static empty replacement untouched (len 0 not freed)" {
+    const gpa = std.testing.allocator;
+    const msg = try gpa.dupe(u8, "m");
+    const d: Diagnostic = .{
+        .path = "t.zig",
+        .byte_offset = 0,
+        .end_offset = 1,
+        .severity = .warn,
+        .lint = "unused_decl",
+        .message = msg,
+        .fix = .{ .start = 0, .end = 1, .replacement = "", .title = "y" },
+    };
+    d.deinit(gpa); // frees only msg; the "" replacement (len 0) must NOT be freed
 }

@@ -106,7 +106,12 @@ pub fn run(ctx: *Context) Context.LintError!void {
             const bytes = ctx.source.bytes;
             if (del_end < bytes.len and bytes[del_end] == ';') del_end += 1;
             if (del_end < bytes.len and bytes[del_end] == '\n') del_end += 1;
-            const fix: Diagnostic.Fix = .{ .start = del_start, .end = del_end, .replacement = "" };
+            const fix: Diagnostic.Fix = .{
+                .start = del_start,
+                .end = del_end,
+                .replacement = "",
+                .title = "remove unused declaration",
+            };
 
             try ctx.reportWithFix(.{
                 .start_offset = start,
@@ -275,4 +280,10 @@ test "unused_decl fix deletes the whole dead const decl (result parses cleanly)"
     var t = try std.zig.Ast.parse(gpa, after_z, .zig);
     defer t.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 0), t.errors.len);
+}
+
+test "unused_decl fix carries a code-action title" {
+    const gpa = std.testing.allocator;
+    const fx = (try fixOf(gpa, "fn dead() void {}\npub fn main() void {}\n")).?;
+    try std.testing.expectEqualStrings("remove unused declaration", fx.title);
 }

@@ -62,9 +62,13 @@ pub const FixSpan = struct {
 
 /// Like `report`, but attaches an automatic `Fix` (see `FixSpan`).
 /// `fix.replacement` must outlive rendering: pass a static string (e.g. ""
-/// for a deletion) or an `ctx.gpa`-owned slice freed by the same path that
-/// frees `.message` -- `Diagnostic` itself does not own or free
-/// `fix.replacement`.
+/// for a deletion) or an `ctx.gpa`-owned slice freed via `Diagnostic.deinit`.
+///
+/// Ownership: on SUCCESS this takes ownership of a non-empty `fix.replacement`
+/// (it is stored as-is and later freed by `Diagnostic.deinit`). On error it
+/// frees only the `message` it allocated, NEVER the replacement -- a caller
+/// that passed an owned replacement must keep its own `errdefer` to free it on
+/// the error path. A static `""` replacement is owned by no one (len 0).
 pub fn reportWithFix(
     ctx: *Context,
     span: FixSpan,

@@ -27,6 +27,7 @@ const too_many_params = @import("../lints/too_many_params.zig");
 const redundant_else = @import("../lints/redundant_else.zig");
 const discarded_error = @import("../lints/discarded_error.zig");
 const inline_container_type = @import("../lints/inline_container_type.zig");
+const unused_decl = @import("../lints/unused_decl.zig");
 
 /// A single open document plus everything derived from it. See the module
 /// doc comment for the ownership contract -- every field here is owned by
@@ -163,7 +164,7 @@ pub const Documents = struct {
 
         var diags: std.ArrayList(Diagnostic) = .empty;
         errdefer {
-            for (diags.items) |d| self.gpa.free(d.message);
+            for (diags.items) |d| d.deinit(self.gpa);
             diags.deinit(self.gpa);
         }
         try Linter.run(self.gpa, &src, &doc.config, &diags);
@@ -206,7 +207,7 @@ pub const Documents = struct {
 };
 
 fn freeDiagMessages(gpa: std.mem.Allocator, diags: []const Diagnostic) void {
-    for (diags) |d| gpa.free(d.message);
+    for (diags) |d| d.deinit(gpa);
 }
 
 /// Converts a `file://` URI to a filesystem path, keeping the leading `/`
@@ -248,18 +249,65 @@ pub fn toLspDiagnostics(
     const out = try gpa.alloc(protocol.LspDiagnostic, doc.last_diags.len);
     errdefer gpa.free(out);
     for (doc.last_diags, 0..) |d, i| {
-        out[i] = .{
-            .range = .{
-                .start = position.offsetToPosition(doc.text, d.byte_offset, enc),
-                .end = position.offsetToPosition(doc.text, d.end_offset, enc),
-            },
-            .severity = severityToLsp(d.severity),
-            .source = "zippy",
-            .code = d.lint,
-            .message = d.message,
-        };
+        out[i] = toLspDiagnostic(doc, d, enc);
     }
     return out;
+}
+
+/// Converts one `Diagnostic` (borrowed from `doc`) to its LSP shape under
+/// `enc`. Factored out of `toLspDiagnostics` so the code-action path can echo a
+/// single covering diagnostic without rebuilding the whole slice. `.message`
+/// borrows from `doc` (same ownership note as `toLspDiagnostics`); `.source`/
+/// `.code` are process-lifetime statics.
+pub fn toLspDiagnostic(
+    doc: *const Doc,
+    d: Diagnostic,
+    enc: position.Encoding,
+) protocol.LspDiagnostic {
+    return .{
+        .range = .{
+            .start = position.offsetToPosition(doc.text, d.byte_offset, enc),
+            .end = position.offsetToPosition(doc.text, d.end_offset, enc),
+        },
+        .severity = severityToLsp(d.severity),
+        .source = "zippy",
+        .code = d.lint,
+        .message = d.message,
+    };
+}
+
+/// One candidate quick-fix: the covering diagnostic's `.fix`, the `title` to
+/// show, and which `last_diags` entry it addresses (so the server can echo that
+/// diagnostic back in the code action). `title`/`fix` borrow from `doc` and are
+/// valid only until the doc's next `lint`/`close`.
+pub const FixCandidate = struct {
+    title: []const u8,
+    fix: Diagnostic.Fix,
+    diag_index: usize,
+};
+
+/// Returns every `doc.last_diags` entry that carries a `.fix` whose squiggle
+/// span `[byte_offset, end_offset)` intersects the byte range
+/// `[start_offset, end_offset]`. The request range is treated as inclusive at
+/// both ends, so a zero-width cursor (`start_offset == end_offset`) inside or
+/// touching a diagnostic still matches. Matching is against the DIAGNOSTIC's
+/// squiggle span (what the editor's cursor relates to), not the fix span. The
+/// returned slice is owned by the caller (free with `gpa`).
+pub fn codeActionsAt(
+    gpa: std.mem.Allocator,
+    doc: *const Doc,
+    start_offset: usize,
+    end_offset: usize,
+) ![]FixCandidate {
+    var out: std.ArrayList(FixCandidate) = .empty;
+    errdefer out.deinit(gpa);
+    for (doc.last_diags, 0..) |d, i| {
+        const fix = d.fix orelse continue;
+        if (d.byte_offset <= end_offset and start_offset <= d.end_offset) {
+            try out.append(gpa, .{ .title = fix.title, .fix = fix, .diag_index = i });
+        }
+    }
+    return out.toOwnedSlice(gpa);
 }
 
 fn severityToLsp(s: Diagnostic.Severity) u8 {
@@ -315,6 +363,7 @@ fn descriptionFor(lint_name: []const u8) ?[]const u8 {
         redundant_else,
         discarded_error,
         inline_container_type,
+        unused_decl,
     }) |mod| {
         if (std.mem.eql(u8, lint_name, mod.name)) return mod.description;
     }
@@ -457,4 +506,50 @@ test "get's *Doc pointer stays valid across a map rehash from later opens" {
 
     // And `get` for the same uri returns the identical pointer.
     try std.testing.expect(docs.get("file:///first.zig").? == first);
+}
+
+test "codeActionsAt returns the unused_decl fix when the range covers the decl" {
+    const gpa = std.testing.allocator;
+    var docs: Documents = .init(gpa, std.testing.io);
+    defer docs.deinit();
+    try docs.open("file:///t.zig", "fn dead() void {}\npub fn main() void {}\n");
+    const doc = docs.get("file:///t.zig").?;
+    try docs.lint(doc);
+    // A range spanning the whole first line (the dead decl).
+    const cands = try codeActionsAt(gpa, doc, 0, 17);
+    defer gpa.free(cands);
+    try std.testing.expectEqual(@as(usize, 1), cands.len);
+    try std.testing.expectEqualStrings("remove unused declaration", cands[0].title);
+    try std.testing.expectEqualStrings("", cands[0].fix.replacement);
+}
+
+test "codeActionsAt matches a zero-width cursor inside the decl name" {
+    const gpa = std.testing.allocator;
+    var docs: Documents = .init(gpa, std.testing.io);
+    defer docs.deinit();
+    try docs.open("file:///t.zig", "fn dead() void {}\npub fn main() void {}\n");
+    const doc = docs.get("file:///t.zig").?;
+    try docs.lint(doc);
+    // Offset 4 is inside "dead" (the squiggle span); start == end (a caret).
+    const cands = try codeActionsAt(gpa, doc, 4, 4);
+    defer gpa.free(cands);
+    try std.testing.expectEqual(@as(usize, 1), cands.len);
+}
+
+test "codeActionsAt returns empty when the range is away from any fixable diag" {
+    const gpa = std.testing.allocator;
+    var docs: Documents = .init(gpa, std.testing.io);
+    defer docs.deinit();
+    try docs.open("file:///t.zig", "fn dead() void {}\npub fn main() void {}\n");
+    const doc = docs.get("file:///t.zig").?;
+    try docs.lint(doc);
+    // Offset 30 is on the second line (pub fn main), where no fixable diag lives.
+    const cands = try codeActionsAt(gpa, doc, 30, 30);
+    defer gpa.free(cands);
+    try std.testing.expectEqual(@as(usize, 0), cands.len);
+}
+
+test "descriptionFor resolves unused_decl to its description" {
+    const d = descriptionFor("unused_decl").?;
+    try std.testing.expect(std.mem.indexOf(u8, d, "private") != null);
 }

@@ -216,6 +216,14 @@ const Server = struct {
             const request_id = id orelse return logMissingId(method);
             return self.handleHover(request_id, params);
         }
+        if (std.mem.eql(u8, method, "textDocument/codeAction")) {
+            const request_id = id orelse return logMissingId(method);
+            return self.handleCodeAction(request_id, params);
+        }
+        if (std.mem.eql(u8, method, "codeAction/resolve")) {
+            const request_id = id orelse return logMissingId(method);
+            return self.handleCodeActionResolve(request_id, params);
+        }
         if (std.mem.eql(u8, method, "shutdown")) {
             const request_id = id orelse return logMissingId(method);
             return self.handleShutdown(request_id);
@@ -228,12 +236,17 @@ const Server = struct {
     fn handleInitialize(self: *Server, id: std.json.Value, params: std.json.Value) !void {
         self.encoding = negotiateEncoding(self.gpa, params);
         self.initialized = true;
-        const Result = struct {
-            capabilities: struct {
-                positionEncoding: []const u8,
-                textDocumentSync: struct { openClose: bool, change: u8, save: bool },
-                hoverProvider: bool,
+        const Capabilities = struct {
+            positionEncoding: []const u8,
+            textDocumentSync: struct { openClose: bool, change: u8, save: bool },
+            hoverProvider: bool,
+            codeActionProvider: struct {
+                resolveProvider: bool,
+                codeActionKinds: []const []const u8,
             },
+        };
+        const Result = struct {
+            capabilities: Capabilities,
             serverInfo: struct { name: []const u8 },
         };
         const result: Result = .{
@@ -241,6 +254,10 @@ const Server = struct {
                 .positionEncoding = if (self.encoding == .utf8) "utf-8" else "utf-16",
                 .textDocumentSync = .{ .openClose = true, .change = 1, .save = true },
                 .hoverProvider = true,
+                .codeActionProvider = .{
+                    .resolveProvider = true,
+                    .codeActionKinds = &.{"quickfix"},
+                },
             },
             .serverInfo = .{ .name = "zippy" },
         };
@@ -337,6 +354,88 @@ const Server = struct {
         try self.sendResult(id, hover);
     }
 
+    /// `textDocument/codeAction`: returns one `quickfix` action per fixable
+    /// diagnostic whose squiggle span overlaps the request range. Each action
+    /// carries an opaque `data` blob but NO `edit` -- the client must call
+    /// `codeAction/resolve` to get the edit (see `handleCodeActionResolve`).
+    /// The transient action tree is built in a per-request arena, torn down
+    /// once it's been stringified into the reply.
+    fn handleCodeAction(self: *Server, id: std.json.Value, params: std.json.Value) !void {
+        const parsed = std.json.parseFromValue(
+            protocol.CodeActionParams,
+            self.gpa,
+            params,
+            .{ .ignore_unknown_fields = true },
+        ) catch return error.InvalidParams;
+        defer parsed.deinit();
+        const p = parsed.value;
+
+        const empty: []const protocol.UnresolvedCodeAction = &.{};
+        // A client that restricts kinds and doesn't want quickfixes gets none.
+        if (p.context.only.len > 0 and !wantsQuickfix(p.context.only)) {
+            return self.sendResult(id, empty);
+        }
+        const doc = self.docs.get(p.textDocument.uri) orelse return self.sendResult(id, empty);
+
+        const start = position.positionToOffset(doc.text, p.range.start, self.encoding);
+        const end = position.positionToOffset(doc.text, p.range.end, self.encoding);
+
+        var arena_state = std.heap.ArenaAllocator.init(self.gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+
+        const cands = try documents.codeActionsAt(arena, doc, start, end);
+        const actions = try arena.alloc(protocol.UnresolvedCodeAction, cands.len);
+        for (cands, 0..) |c, i| {
+            const ld = try arena.alloc(protocol.LspDiagnostic, 1);
+            ld[0] = documents.toLspDiagnostic(doc, doc.last_diags[c.diag_index], self.encoding);
+            actions[i] = .{
+                .title = c.title,
+                .kind = "quickfix",
+                .diagnostics = ld,
+                .data = .{
+                    .uri = doc.uri,
+                    .range = .{
+                        .start = position.offsetToPosition(doc.text, c.fix.start, self.encoding),
+                        .end = position.offsetToPosition(doc.text, c.fix.end, self.encoding),
+                    },
+                    .newText = c.fix.replacement,
+                },
+            };
+        }
+        try self.sendResult(id, actions);
+    }
+
+    /// `codeAction/resolve`: fills in the `edit` for an action previously
+    /// returned by `handleCodeAction`. Self-contained -- it reads only the
+    /// action's `data` (uri + range + newText), never the live document -- so
+    /// it stays correct even if the doc changed or closed since the code action
+    /// was offered. `params` IS the code action object the client sends back.
+    fn handleCodeActionResolve(self: *Server, id: std.json.Value, params: std.json.Value) !void {
+        const Incoming = struct {
+            title: []const u8 = "",
+            kind: []const u8 = "quickfix",
+            data: protocol.CodeActionData,
+        };
+        const parsed = std.json.parseFromValue(
+            Incoming,
+            self.gpa,
+            params,
+            .{ .ignore_unknown_fields = true },
+        ) catch return error.InvalidParams;
+        defer parsed.deinit();
+        const in = parsed.value;
+        const resolved: protocol.ResolvedCodeAction = .{
+            .title = in.title,
+            .kind = in.kind,
+            .edit = .{
+                .uri = in.data.uri,
+                .edits = &.{.{ .range = in.data.range, .newText = in.data.newText }},
+            },
+        };
+        try self.sendResult(id, resolved);
+    }
+
     fn handleShutdown(self: *Server, id: std.json.Value) !void {
         self.shutdown_requested = true;
         try self.sendResult(id, std.json.Value.null);
@@ -419,6 +518,14 @@ fn negotiateEncoding(gpa: std.mem.Allocator, params: std.json.Value) position.En
         if (std.mem.eql(u8, enc, "utf-8")) return .utf8;
     }
     return .utf16;
+}
+
+/// True if the client's `context.only` kind filter includes our one action
+/// kind, "quickfix". Our actions have no sub-kinds, so an exact match suffices
+/// (there is no "quickfix.foo" that would need ancestor matching).
+fn wantsQuickfix(only: []const []const u8) bool {
+    for (only) |k| if (std.mem.eql(u8, k, "quickfix")) return true;
+    return false;
 }
 
 fn logMissingId(method: []const u8) void {
@@ -708,4 +815,131 @@ test "didSave re-lints and republishes diagnostics for the saved doc" {
     }
     try std.testing.expectEqual(@as(usize, 2), occurrences);
     try std.testing.expect(std.mem.indexOf(u8, o, "naming_convention") != null);
+}
+
+test "initialize advertises codeActionProvider with resolveProvider" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var input: std.Io.Writer.Allocating = .init(gpa);
+    defer input.deinit();
+    try transport.writeMessage(
+        &input.writer,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}",
+    );
+    try transport.writeMessage(
+        &input.writer,
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}",
+    );
+    try transport.writeMessage(&input.writer, "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}");
+
+    var r: std.Io.Reader = .fixed(input.written());
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    _ = try serve(io, gpa, &r, &out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"resolveProvider\":true") != null);
+}
+
+test "codeAction over a dead decl returns a quickfix with data and no edit" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var input: std.Io.Writer.Allocating = .init(gpa);
+    defer input.deinit();
+    try transport.writeMessage(
+        &input.writer,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}",
+    );
+    try transport.writeMessage(&input.writer,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":
+        \\{"textDocument":{"uri":"file:///t.zig",
+        \\"text":"fn dead() void {}\npub fn main() void {}\n"}}}
+    );
+    try transport.writeMessage(&input.writer,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/codeAction","params":
+        \\{"textDocument":{"uri":"file:///t.zig"},
+        \\"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":17}},
+        \\"context":{"only":["quickfix"]}}}
+    );
+    try transport.writeMessage(
+        &input.writer,
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"shutdown\"}",
+    );
+    try transport.writeMessage(&input.writer, "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}");
+
+    var r: std.Io.Reader = .fixed(input.written());
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    _ = try serve(io, gpa, &r, &out.writer);
+    const o = out.written();
+    try std.testing.expect(std.mem.indexOf(u8, o, "remove unused declaration") != null);
+    try std.testing.expect(std.mem.indexOf(u8, o, "\"kind\":\"quickfix\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, o, "\"data\":") != null);
+    // The unresolved action carries NO edit (the whole point of resolve) and
+    // was non-empty (not the "no actions" empty-array result).
+    try std.testing.expect(std.mem.indexOf(u8, o, "\"changes\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, o, "\"result\":[]") == null);
+}
+
+test "codeAction/resolve turns data into a workspace edit" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var input: std.Io.Writer.Allocating = .init(gpa);
+    defer input.deinit();
+    try transport.writeMessage(
+        &input.writer,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}",
+    );
+    // resolve is self-contained: it needs no open doc, only the action's data.
+    try transport.writeMessage(&input.writer,
+        \\{"jsonrpc":"2.0","id":2,"method":"codeAction/resolve","params":
+        \\{"title":"remove unused declaration","kind":"quickfix",
+        \\"data":{"uri":"file:///t.zig",
+        \\"range":{"start":{"line":0,"character":0},"end":{"line":1,"character":0}},
+        \\"newText":""}}}
+    );
+    try transport.writeMessage(
+        &input.writer,
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"shutdown\"}",
+    );
+    try transport.writeMessage(&input.writer, "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}");
+
+    var r: std.Io.Reader = .fixed(input.written());
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    _ = try serve(io, gpa, &r, &out.writer);
+    const o = out.written();
+    try std.testing.expect(std.mem.indexOf(u8, o, "\"changes\":{\"file:///t.zig\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, o, "\"newText\":\"\"") != null);
+}
+
+test "codeAction with only:[refactor] returns an empty array" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var input: std.Io.Writer.Allocating = .init(gpa);
+    defer input.deinit();
+    try transport.writeMessage(
+        &input.writer,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}",
+    );
+    try transport.writeMessage(&input.writer,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":
+        \\{"textDocument":{"uri":"file:///t.zig",
+        \\"text":"fn dead() void {}\npub fn main() void {}\n"}}}
+    );
+    try transport.writeMessage(&input.writer,
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/codeAction","params":
+        \\{"textDocument":{"uri":"file:///t.zig"},
+        \\"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":17}},
+        \\"context":{"only":["refactor"]}}}
+    );
+    try transport.writeMessage(
+        &input.writer,
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"shutdown\"}",
+    );
+    try transport.writeMessage(&input.writer, "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}");
+
+    var r: std.Io.Reader = .fixed(input.written());
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    _ = try serve(io, gpa, &r, &out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"result\":[]") != null);
 }

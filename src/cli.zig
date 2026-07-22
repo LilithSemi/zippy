@@ -260,7 +260,14 @@ pub fn run(a: RunArgs) !u8 {
     // case: today only `unused_decl` ever sets `.fix`), so there's no need to
     // thread `fix_mode` down into `lintFile` just to skip it.
     var fixable: std.ArrayList(Diagnostic) = .empty;
-    defer fixable.deinit(a.gpa);
+    defer {
+        for (fixable.items) |f| {
+            if (f.fix) |fx| {
+                if (fx.replacement.len > 0) a.gpa.free(fx.replacement);
+            }
+        }
+        fixable.deinit(a.gpa);
+    }
     const lint_args: LintFileArgs = .{
         .io = a.io,
         .gpa = a.gpa,
@@ -476,7 +483,7 @@ fn lintFile(
 
     var diags: std.ArrayList(Diagnostic) = .empty;
     defer {
-        for (diags.items) |d| a.gpa.free(d.message);
+        for (diags.items) |d| d.deinit(a.gpa);
         diags.deinit(a.gpa);
     }
     try Linter.run(a.gpa, &src, a.cfg, &diags);
@@ -487,9 +494,14 @@ fn lintFile(
             tracking.any = true;
             if (d.fix == null) tracking.unfixable = true;
         }
-        if (d.fix != null) {
+        if (d.fix) |fx| {
             var copy = d;
             copy.message = "";
+            // The copy outlives this file's `diags` (freed on return), so it
+            // must own its replacement independently rather than share the
+            // original's freed pointer. `""` (a deletion) needs no copy.
+            if (fx.replacement.len > 0) copy.fix.?.replacement = try a.gpa.dupe(u8, fx.replacement);
+            errdefer if (copy.fix.?.replacement.len > 0) a.gpa.free(copy.fix.?.replacement);
             try fixable.append(a.gpa, copy);
         }
     }

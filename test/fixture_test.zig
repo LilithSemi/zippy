@@ -44,7 +44,7 @@ fn checkFixture(
 
     var diags: std.ArrayList(Diagnostic) = .empty;
     defer {
-        for (diags.items) |d| gpa.free(d.message);
+        for (diags.items) |d| d.deinit(gpa);
         diags.deinit(gpa);
     }
     try Linter.run(gpa, &src, &cfg, &diags);
