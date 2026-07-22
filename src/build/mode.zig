@@ -28,6 +28,7 @@ const Config = @import("../Config.zig");
 const Linter = @import("../Linter.zig");
 const Diagnostic = @import("../Diagnostic.zig");
 const cli = @import("../cli.zig");
+const fix = @import("../fix.zig");
 
 /// The `--build-runner` implementation, embedded into the `zippy` binary at
 /// compile time so it ships as a single static executable with no sidecar
@@ -71,6 +72,16 @@ pub const RunArgs = struct {
     /// through here so builder mode honors `--color` identically instead of
     /// hardcoding plain output.
     use_color: bool,
+    /// `--fix`: after the normal render pass, collect every `.lint`-kind
+    /// `MergedDiag` that carries a `.fix` and hand them to `fix.apply` once.
+    /// Defaults to `false` so every existing caller (in particular the four
+    /// `e2e_test.zig` invocations predating `--fix`) keeps building without
+    /// having to name this field.
+    fix_mode: bool = false,
+    /// `--allow-dirty`, forwarded verbatim to `fix.apply`. Has no effect
+    /// unless `fix_mode` is also set. Same default-`false` reasoning as
+    /// `fix_mode` above.
+    allow_dirty: bool = false,
 };
 
 /// Which of the three diagnostic sources produced a `MergedDiag`, needed by
@@ -111,7 +122,21 @@ const MergedDiag = struct {
 ///       finding, or a `dead_file` whose resolved severity is `.@"error"`).
 ///   2 - Zippy itself failed: the child `zig build` failed or couldn't be
 ///       spawned, the manifest was missing/unparseable, the project root
-///       vanished, or a file it needed to read became unreadable mid-run.
+///       vanished, a file it needed to read became unreadable mid-run, or --
+///       with `--fix` -- `fix.apply` itself failed to read/write a file it
+///       had already decided to touch.
+///
+/// With `--fix` (`a.fix_mode`): after the render pass below (never before --
+/// see the comment at the fix-apply call site for why), every `.lint`-kind
+/// `MergedDiag` carrying a `.fix` is collected and handed to `fix.apply`
+/// once. `dead_file`/`compile_error` entries never carry a `.fix` (see
+/// `DiagKind`'s doc comment), so they're untouched either way. The exit code
+/// then uses the same approximation `cli.zig`'s static mode uses (see its
+/// `run`'s doc comment): a fully clean apply pass treats every diagnostic
+/// that HAD a `.fix` as resolved and excludes it from the error-severity
+/// check; any refusal/skip falls back to the original, unmodified rule --
+/// every `.@"error"` diagnostic counts, fixed or not -- so a partially
+/// applied `--fix` run never reports a falsely-clean exit code.
 pub fn run(a: RunArgs) !u8 {
     const tmp_base = a.base_env.get("TMPDIR") orelse "/tmp";
     var random_bytes: [12]u8 = undefined;
@@ -239,7 +264,7 @@ pub fn run(a: RunArgs) !u8 {
     };
     defer cfg.deinit(a.gpa);
 
-    var had_error = false;
+    var tracking: ErrorTracking = .{};
 
     // Every diagnostic from all three sources (lints, `dead_file`, compiler
     // errors) is collected into ONE list here, then sorted once below by
@@ -381,11 +406,61 @@ pub fn run(a: RunArgs) !u8 {
             return 2;
         }
 
-        if (m.diag.severity == .@"error") had_error = true;
+        if (m.diag.severity == .@"error") {
+            tracking.any = true;
+            if (m.diag.fix == null) tracking.unfixable = true;
+        }
     }
 
+    if (!a.fix_mode) return if (tracking.any) @as(u8, 1) else @as(u8, 0);
+
+    // `fix.apply` runs only now, AFTER the render pass above has already
+    // rendered every diagnostic against the original (pre-fix) source --
+    // running it any earlier would let it splice a file on disk before that
+    // file's own diagnostics were rendered, misaligning their byte offsets
+    // against the now-different-length text (or, in the merged multi-source
+    // stream here, potentially against a LATER diagnostic sharing that same
+    // path). Only `.lint`-kind entries can carry a `.fix` at all (`dead_file`
+    // and `compile_error` never do -- see `DiagKind`'s doc comment), so this
+    // filter alone is enough; no separate check of `m.kind` covers something
+    // `m.diag.fix != null` doesn't already imply.
+    var fixable: std.ArrayList(Diagnostic) = .empty;
+    defer fixable.deinit(a.gpa);
+    for (merged.items) |m| {
+        if (m.kind == .lint and m.diag.fix != null) try fixable.append(a.gpa, m.diag);
+    }
+
+    const fix_result = fix.apply(a.gpa, a.io, fixable.items, a.allow_dirty, a.stderr) catch |err| {
+        try a.stderr.print("zippy: fix apply failed: {s}\n", .{@errorName(err)});
+        return 2;
+    };
+    try a.stderr.print(
+        "zippy: applied {d} fix(es), {d} skipped, {d} refused\n",
+        .{ fix_result.applied, fix_result.skipped, fix_result.refused },
+    );
+    // See `run`'s doc comment for the exit-code approximation this
+    // implements.
+    const clean = fix_result.refused == 0 and fix_result.skipped == 0;
+    const had_error = if (clean) tracking.unfixable else tracking.any;
     return if (had_error) @as(u8, 1) else @as(u8, 0);
 }
+
+/// Accumulates two exit-code signals across the whole merged render pass,
+/// bundled into one struct so the field-access sites above stay simple. See
+/// `run`'s doc comment for how `--fix` uses the distinction between the two;
+/// mirrors `cli.zig`'s own `ErrorTracking` (kept separate rather than shared
+/// since the two modules aren't otherwise coupled -- same reasoning as
+/// `LintFileArgs` below).
+const ErrorTracking = struct {
+    /// True if ANY `.@"error"`-severity diagnostic fired, fixed or not.
+    any: bool = false,
+    /// True if an `.@"error"`-severity diagnostic fired that had NO `.fix`
+    /// at all. Always true alongside `any` for `dead_file`/`compile_error`
+    /// entries (neither ever carries a `.fix`), and only ever diverges from
+    /// `any` when a `.lint` entry with a `.fix` is the sole error-severity
+    /// finding.
+    unfixable: bool = false,
+};
 
 /// Builds the `Diagnostic` for one manifest `CompileError`. Always
 /// `.@"error"` severity (there is no such thing as a warning-level compiler

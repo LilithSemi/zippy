@@ -90,12 +90,29 @@ pub fn run(ctx: *Context) Context.LintError!void {
         const ident = tree.tokenSlice(name_tok);
         if ((counts.get(ident) orelse 0) == 1) {
             const start = tree.tokenStart(name_tok);
-            try ctx.report(
-                start,
-                start + @as(u32, @intCast(ident.len)),
-                "private declaration '{s}' is never referenced",
-                .{ident},
-            );
+
+            // Delete span: the decl's first token through the end of its
+            // last token, then extended over a following `;` (a var-decl's
+            // `lastToken` stops at its initializer expression, not the
+            // trailing `;`) and then one trailing `\n` (delete the whole
+            // line, no blank line left behind). A fn-with-body's `lastToken`
+            // is its closing `}` -- no `;` follows, so the `;` check is a
+            // harmless no-op there.
+            const first_tok = tree.firstToken(node);
+            const last_tok = tree.lastToken(node);
+            const del_start = tree.tokenStart(first_tok);
+            const last_len: u32 = @intCast(tree.tokenSlice(last_tok).len);
+            var del_end = tree.tokenStart(last_tok) + last_len;
+            const bytes = ctx.source.bytes;
+            if (del_end < bytes.len and bytes[del_end] == ';') del_end += 1;
+            if (del_end < bytes.len and bytes[del_end] == '\n') del_end += 1;
+            const fix: Diagnostic.Fix = .{ .start = del_start, .end = del_end, .replacement = "" };
+
+            try ctx.reportWithFix(.{
+                .start_offset = start,
+                .end_offset = start + @as(u32, @intCast(ident.len)),
+                .fix = fix,
+            }, "private declaration '{s}' is never referenced", .{ident});
         }
     }
 }
@@ -206,4 +223,56 @@ test "misses a self-recursive but otherwise unreferenced private fn (documented 
             "fn helper() void { helper(); }\npub fn main() void {}\n",
         ),
     );
+}
+
+fn fixOf(gpa: std.mem.Allocator, src_text: []const u8) !?Diagnostic.Fix {
+    var src = try Source.loadFromSlice(gpa, "t.zig", src_text);
+    defer src.deinit(gpa);
+    var cfg = Config.default();
+    var diags: std.ArrayList(Diagnostic) = .empty;
+    defer {
+        for (diags.items) |d| gpa.free(d.message);
+        diags.deinit(gpa);
+    }
+    var ctx: Context = .{
+        .gpa = gpa,
+        .source = &src,
+        .config = &cfg,
+        .diags = &diags,
+        .current_lint = name,
+        .current_severity = .warn,
+    };
+    try run(&ctx);
+    if (diags.items.len == 0) return null;
+    return diags.items[0].fix;
+}
+
+test "unused_decl fix deletes the whole dead fn decl (result parses cleanly)" {
+    const gpa = std.testing.allocator;
+    const s = "fn dead() void {}\npub fn main() void {}\n";
+    const fx = (try fixOf(gpa, s)).?;
+    // fix span covers `fn dead() void {}` plus the trailing newline
+    const after = try std.mem.concat(gpa, u8, &.{ s[0..fx.start], fx.replacement, s[fx.end..] });
+    defer gpa.free(after);
+    try std.testing.expectEqualStrings("pub fn main() void {}\n", after);
+    // and the result still parses:
+    const after_z = try gpa.dupeZ(u8, after);
+    defer gpa.free(after_z);
+    var t = try std.zig.Ast.parse(gpa, after_z, .zig);
+    defer t.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), t.errors.len);
+}
+
+test "unused_decl fix deletes the whole dead const decl (result parses cleanly)" {
+    const gpa = std.testing.allocator;
+    const s = "const Unused = 1;\npub fn main() void {}\n";
+    const fx = (try fixOf(gpa, s)).?;
+    const after = try std.mem.concat(gpa, u8, &.{ s[0..fx.start], fx.replacement, s[fx.end..] });
+    defer gpa.free(after);
+    try std.testing.expectEqualStrings("pub fn main() void {}\n", after);
+    const after_z = try gpa.dupeZ(u8, after);
+    defer gpa.free(after_z);
+    var t = try std.zig.Ast.parse(gpa, after_z, .zig);
+    defer t.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), t.errors.len);
 }

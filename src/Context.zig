@@ -47,3 +47,78 @@ pub fn report(
         .message = msg,
     });
 }
+
+/// The message span plus `Fix` for `reportWithFix`, bundled into one struct
+/// per `too_many_params`' own advice ("bundle related parameters into a
+/// struct") -- `report` already spends its full 5-parameter budget on
+/// `(ctx, start_offset, end_offset, fmt, args)`, so the `Fix` this function
+/// adds on top has to travel bundled with the span rather than as its own
+/// positional parameter.
+pub const FixSpan = struct {
+    start_offset: usize,
+    end_offset: usize,
+    fix: Diagnostic.Fix,
+};
+
+/// Like `report`, but attaches an automatic `Fix` (see `FixSpan`).
+/// `fix.replacement` must outlive rendering: pass a static string (e.g. ""
+/// for a deletion) or an `ctx.gpa`-owned slice freed by the same path that
+/// frees `.message` -- `Diagnostic` itself does not own or free
+/// `fix.replacement`.
+pub fn reportWithFix(
+    ctx: *Context,
+    span: FixSpan,
+    comptime fmt: []const u8,
+    args: anytype,
+) LintError!void {
+    const msg = try std.fmt.allocPrint(ctx.gpa, fmt, args);
+    errdefer ctx.gpa.free(msg);
+    try ctx.diags.append(ctx.gpa, .{
+        .path = ctx.source.path,
+        .byte_offset = span.start_offset,
+        .end_offset = span.end_offset,
+        .severity = ctx.current_severity,
+        .lint = ctx.current_lint,
+        .message = msg,
+        .fix = span.fix,
+    });
+}
+
+test "reportWithFix attaches a Fix to the diagnostic" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const x = 1;\n" });
+    const p = try tmp.dir.realPathFileAlloc(io, "a.zig", gpa);
+    defer gpa.free(p);
+
+    var src = try Source.load(io, gpa, p);
+    defer src.deinit(gpa);
+    const cfg = Config.default();
+
+    var diags: std.ArrayList(Diagnostic) = .empty;
+    defer {
+        for (diags.items) |d| gpa.free(d.message);
+        diags.deinit(gpa);
+    }
+    var ctx: Context = .{
+        .gpa = gpa,
+        .source = &src,
+        .config = &cfg,
+        .diags = &diags,
+        .current_lint = "unused_decl",
+        .current_severity = .warn,
+    };
+    try ctx.reportWithFix(.{
+        .start_offset = 6,
+        .end_offset = 7,
+        .fix = .{ .start = 0, .end = 13, .replacement = "" },
+    }, "unused decl 'x'", .{});
+
+    try std.testing.expectEqual(@as(usize, 1), diags.items.len);
+    const fix = diags.items[0].fix.?;
+    try std.testing.expectEqual(@as(usize, 0), fix.start);
+    try std.testing.expectEqual(@as(usize, 13), fix.end);
+    try std.testing.expectEqual(@as(usize, 0), fix.replacement.len);
+}

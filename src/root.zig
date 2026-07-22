@@ -8,6 +8,7 @@ pub const Diagnostic = @import("Diagnostic.zig");
 pub const Source = @import("Source.zig");
 pub const Config = @import("Config.zig");
 pub const Linter = @import("Linter.zig");
+pub const fix = @import("fix.zig");
 pub const paths = @import("paths.zig");
 pub const cli = @import("cli.zig");
 pub const build_manifest = @import("build/manifest.zig");

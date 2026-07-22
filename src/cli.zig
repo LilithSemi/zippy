@@ -8,6 +8,7 @@ const Linter = @import("Linter.zig");
 const Diagnostic = @import("Diagnostic.zig");
 const paths = @import("paths.zig");
 const build_mode = @import("build/mode.zig");
+const fix = @import("fix.zig");
 
 const usage =
     \\Usage: zippy [options] [paths...]
@@ -18,6 +19,13 @@ const usage =
     \\                          Control ANSI color in diagnostic output.
     \\                          auto (default): color iff stdout is a TTY
     \\                          and NO_COLOR is unset.
+    \\  --fix                   Apply every diagnostic's automatic fix (if it
+    \\                          has one) to the working tree. Refuses to
+    \\                          touch a file with uncommitted git changes
+    \\                          unless --allow-dirty is also given.
+    \\  --allow-dirty           With --fix, also fix files that have
+    \\                          uncommitted git changes. Has no effect
+    \\                          without --fix.
     \\  lsp                     Run as a Language Server (LSP over stdio).
     \\
     \\Bare `zippy` (no paths), run inside a project with a build.zig, runs
@@ -117,7 +125,22 @@ pub const RunArgs = struct {
 /// Returns the process exit code:
 ///   0 - clean, or only `.warn`/`.off` diagnostics fired.
 ///   1 - at least one `.@"error"`-severity diagnostic fired.
-///   2 - Zippy itself failed (bad `zippy.zon`, unreadable path, bad usage).
+///   2 - Zippy itself failed (bad `zippy.zon`, unreadable path, bad usage,
+///       or -- with `--fix` -- `fix.apply` itself failing to read/write a
+///       file it had already decided to touch).
+///
+/// With `--fix`: every diagnostic carrying a `.fix` is collected and handed
+/// to `fix.apply` once, after all normal rendering is done (never before --
+/// re-reading a file `fix.apply` already spliced would misalign every
+/// diagnostic's byte offsets against the now-shorter/longer source). The
+/// exit code then uses an approximation rather than re-linting the fixed
+/// files: if the apply pass was fully clean (nothing refused or skipped),
+/// every diagnostic that HAD a `.fix` is treated as resolved and excluded
+/// from the error-severity check; otherwise (any refusal/skip happened) this
+/// falls back to the conservative, unmodified rule -- every `.@"error"`
+/// diagnostic counts, fixed or not -- so a partially-applied `--fix` run
+/// never falsely reports clean to a caller (e.g. CI) that checks the exit
+/// code alone.
 ///
 /// Takes a single `RunArgs` bundle rather than six positional parameters --
 /// same reasoning as `LintFileArgs` below: this codebase caps functions at
@@ -137,6 +160,11 @@ pub fn run(a: RunArgs) !u8 {
 
     const color_flag_prefix = "--color=";
     var color_mode: ColorMode = .auto;
+    // Both consumed here, never appended to `targets` (so neither is ever
+    // mistaken for a path target in static mode, nor forwarded as a `zig
+    // build` argument in builder mode's dispatch below).
+    var fix_mode = false;
+    var allow_dirty = false;
     var targets: std.ArrayList([]const u8) = .empty;
     defer targets.deinit(a.gpa);
     for (a.args) |arg| {
@@ -150,6 +178,14 @@ pub fn run(a: RunArgs) !u8 {
                 try a.stderr.print("zippy: invalid --color value: {s}\n", .{value});
                 return 2;
             };
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--fix")) {
+            fix_mode = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--allow-dirty")) {
+            allow_dirty = true;
             continue;
         }
         try targets.append(a.gpa, arg);
@@ -174,13 +210,14 @@ pub fn run(a: RunArgs) !u8 {
         };
         defer a.gpa.free(project_root);
         // No leftover args to forward: everything in `a.args` was already
-        // consumed above as either `-h`/`--help` (which returned already)
-        // or `--color=`, neither of which `zig build` understands. In
-        // particular `build_args` is unconditionally empty here, so a
-        // `--color=` meant for Zippy can never leak through to the spawned
-        // `zig build` invocation as an argument it doesn't recognize --
-        // it's fully consumed by the parse loop above (resolved into
-        // `use_color`, not appended to `targets`).
+        // consumed above as `-h`/`--help` (which returned already),
+        // `--color=`, `--fix`, or `--allow-dirty` -- none of which `zig
+        // build` understands. In particular `build_args` is unconditionally
+        // empty here, so a flag meant for Zippy can never leak through to
+        // the spawned `zig build` invocation as an argument it doesn't
+        // recognize -- each is fully consumed by the parse loop above
+        // (resolved into `use_color`/`fix_mode`/`allow_dirty`, never
+        // appended to `targets`).
         return build_mode.run(.{
             .io = a.io,
             .gpa = a.gpa,
@@ -190,6 +227,8 @@ pub fn run(a: RunArgs) !u8 {
             .stderr = a.stderr,
             .base_env = a.environ_map,
             .use_color = use_color,
+            .fix_mode = fix_mode,
+            .allow_dirty = allow_dirty,
         });
     }
     try a.stderr.writeAll(deprecation_note);
@@ -212,7 +251,16 @@ pub fn run(a: RunArgs) !u8 {
         };
     }
 
-    var had_error = false;
+    var tracking: ErrorTracking = .{};
+    // Collects a COPY of every diagnostic that carries a `.fix`, across every
+    // file, so `fix.apply` can be called once at the end with the full set
+    // rather than per-file -- see `lintFile`'s doc comment for why a copy
+    // (not the original `Diagnostic`) is what gets appended here. Built
+    // regardless of `fix_mode` costs nothing when it stays empty (the common
+    // case: today only `unused_decl` ever sets `.fix`), so there's no need to
+    // thread `fix_mode` down into `lintFile` just to skip it.
+    var fixable: std.ArrayList(Diagnostic) = .empty;
+    defer fixable.deinit(a.gpa);
     const lint_args: LintFileArgs = .{
         .io = a.io,
         .gpa = a.gpa,
@@ -221,13 +269,56 @@ pub fn run(a: RunArgs) !u8 {
         .use_color = use_color,
     };
     for (files.items) |f| {
-        lintFile(lint_args, f, &had_error) catch |err| {
+        lintFile(lint_args, f, &tracking, &fixable) catch |err| {
             try a.stderr.print("zippy: {s}: {s}\n", .{ f, @errorName(err) });
             return 2;
         };
     }
+
+    if (!fix_mode) return if (tracking.any) @as(u8, 1) else @as(u8, 0);
+
+    // `fix.apply` runs only now, AFTER every diagnostic above has already
+    // been rendered against the original (pre-fix) source -- rendering
+    // against a file `fix.apply` already spliced would misalign every
+    // diagnostic's byte offsets against the now-different-length text. Its
+    // own failure (a read/write error on a file it had already decided to
+    // touch) is caught and turned into this function's documented exit-2
+    // contract rather than left to propagate as a raw Zig error, matching
+    // every other Zippy-itself-failed branch in this function.
+    const result = fix.apply(a.gpa, a.io, fixable.items, allow_dirty, a.stderr) catch |err| {
+        try a.stderr.print("zippy: fix apply failed: {s}\n", .{@errorName(err)});
+        return 2;
+    };
+    try a.stderr.print(
+        "zippy: applied {d} fix(es), {d} skipped, {d} refused\n",
+        .{ result.applied, result.skipped, result.refused },
+    );
+    // See `run`'s doc comment for the exit-code approximation this
+    // implements: a fully clean apply pass (nothing refused or skipped)
+    // treats every diagnostic that HAD a `.fix` as resolved; any refusal or
+    // skip falls back to the conservative `tracking.any` (every
+    // `.@"error"` diagnostic counts, fixed or not).
+    const clean = result.refused == 0 and result.skipped == 0;
+    const had_error = if (clean) tracking.unfixable else tracking.any;
     return if (had_error) @as(u8, 1) else @as(u8, 0);
 }
+
+/// Accumulates two exit-code signals across every file `lintFile` processes,
+/// bundled into one struct (rather than two separate `*bool` parameters) so
+/// `lintFile` stays under this codebase's five-parameter cap. See `run`'s
+/// doc comment for how `--fix` uses the distinction between the two.
+const ErrorTracking = struct {
+    /// True if ANY `.@"error"`-severity diagnostic fired, fixed or not. This
+    /// alone is the exit-code signal when `--fix` wasn't given (unchanged
+    /// from before `--fix` existed) and the conservative fallback signal
+    /// when `--fix` was given but its apply pass wasn't fully clean.
+    any: bool = false,
+    /// True if an `.@"error"`-severity diagnostic fired that had NO `.fix`
+    /// at all -- i.e. one `--fix` could never have resolved regardless of
+    /// how its apply pass went. Used as the exit-code signal only when
+    /// `--fix` ran AND its apply pass was fully clean.
+    unfixable: bool = false,
+};
 
 /// Resolves `target` to one or more `.zig` files, appending owned path
 /// strings to `out`. A file target is taken as-is (the user asked for it
@@ -349,7 +440,8 @@ pub fn findProjectRoot(io: std.Io, gpa: std.mem.Allocator, start_dir: []const u8
 
 /// Bundles the fixed-for-the-whole-run arguments `lintFile` needs, keeping
 /// its own parameter count at (this codebase's own) limit of five: this
-/// struct, the path being linted, and the mutable `had_error` flag.
+/// struct, the path being linted, the mutable `tracking` accumulator, and
+/// the `fixable` list collected diagnostics are appended to.
 const LintFileArgs = struct {
     io: std.Io,
     gpa: std.mem.Allocator,
@@ -359,9 +451,26 @@ const LintFileArgs = struct {
 };
 
 /// Lints a single file: loads it, runs every enabled lint, renders each
-/// diagnostic to `stdout` in zig-compiler style, and sets `had_error.*` if
-/// any diagnostic fired at `.@"error"` severity.
-fn lintFile(a: LintFileArgs, path: []const u8, had_error: *bool) !void {
+/// diagnostic to `stdout` in zig-compiler style, and folds its findings into
+/// `tracking` (see `ErrorTracking`'s doc comment).
+///
+/// Every diagnostic that carries a `.fix` also gets a COPY appended to
+/// `fixable`, for `run` to hand to `fix.apply` once at the end across every
+/// file. The copy's `.message` is overwritten with a static `""` rather than
+/// kept as-is: `.message` is gpa-owned and freed by this function's own
+/// `defer` below right after rendering, so keeping the original pointer
+/// around in `fixable` past that point would leave a dangling reference
+/// sitting in the list. `fix.apply` never reads `.message` (only `.path`/
+/// `.fix`), so the empty placeholder is never observed. `.path` needs no
+/// such copy -- it borrows from the caller's `files` list in `run`, which
+/// outlives this whole loop (freed only in `run`'s own `defer`, well after
+/// `fix.apply` is called).
+fn lintFile(
+    a: LintFileArgs,
+    path: []const u8,
+    tracking: *ErrorTracking,
+    fixable: *std.ArrayList(Diagnostic),
+) !void {
     var src = try Source.load(a.io, a.gpa, path);
     defer src.deinit(a.gpa);
 
@@ -374,7 +483,15 @@ fn lintFile(a: LintFileArgs, path: []const u8, had_error: *bool) !void {
 
     for (diags.items) |d| {
         try d.render(src.bytes, a.stdout, a.use_color);
-        if (d.severity == .@"error") had_error.* = true;
+        if (d.severity == .@"error") {
+            tracking.any = true;
+            if (d.fix == null) tracking.unfixable = true;
+        }
+        if (d.fix != null) {
+            var copy = d;
+            copy.message = "";
+            try fixable.append(a.gpa, copy);
+        }
     }
 }
 

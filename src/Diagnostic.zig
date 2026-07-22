@@ -17,6 +17,21 @@ end_offset: usize,
 severity: Severity,
 lint: []const u8,
 message: []const u8,
+/// An optional automatic fix for this diagnostic. `null` (the default) for
+/// every diagnostic that has no machine-applicable fix, which is every
+/// diagnostic today -- existing `Diagnostic{...}` literals and the
+/// render/LSP paths that build them are unaffected by this field.
+fix: ?Fix = null,
+
+/// An automatic fix for a diagnostic: replace the bytes `[start, end)` of the
+/// source with `replacement`. Separate from the diagnostic's own
+/// `byte_offset`/`end_offset` (where the message points) -- the fix span can
+/// differ (e.g. the message points at a name, the fix deletes the whole decl).
+pub const Fix = struct {
+    start: usize,
+    end: usize,
+    replacement: []const u8,
+};
 
 /// A 1-based line/column plus the `[line_start, line_end)` byte range of
 /// that line (excluding the newline). Named (rather than an inline anonymous

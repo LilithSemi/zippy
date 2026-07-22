@@ -436,3 +436,214 @@ fn runOnce(
         .skip = skip,
     };
 }
+
+/// Runs one `git` subcommand in `dir`, discarding its stdout/stderr (every
+/// call site below only cares whether it succeeded) and treating a
+/// `FileNotFound` spawn failure -- `git` isn't on `PATH` in this environment
+/// -- as a reason to skip the whole test rather than fail it. Mirrors
+/// `fix.zig`'s own `runOrSkip` test helper (that file can't import this one
+/// or vice versa without an unwanted coupling between a unit test and an
+/// e2e test, so the small helper is duplicated rather than shared).
+fn git(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, argv: []const []const u8) !void {
+    const r = std.process.run(gpa, io, .{ .argv = argv, .cwd = .{ .path = dir } }) catch |err| {
+        if (err == error.FileNotFound) return error.SkipZigTest;
+        return err;
+    };
+    gpa.free(r.stdout);
+    gpa.free(r.stderr);
+}
+
+// Task 4 (fix-mode wiring): `--fix` end to end through the REAL
+// builder-mode chain -- embedded runner -> manifest -> reachability ->
+// `unused_decl` lint -> `fix.apply` actually splicing the file on disk.
+// Every other test in this file proves a diagnostic FIRES; this one proves
+// `--fix` makes the dead code actually disappear from the file, using a
+// real git-tracked, fully-committed (clean) project so `fix.apply`'s own
+// dirty-check lets it through. Gated on both `git` (via the `git` helper
+// above) and `zig` (via `mode.run`'s own FileNotFound check below) being on
+// `PATH` -- either missing skips the whole test.
+test "mode.run --fix: deletes a dead private fn from a clean git project, exit 0" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data =
+        \\const std = @import("std");
+        \\pub fn build(b: *std.Build) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const optimize = b.standardOptimizeOption(.{});
+        \\    const exe = b.addExecutable(.{
+        \\        .name = "proj",
+        \\        .root_module = b.createModule(.{
+        \\            .root_source_file = b.path("src/main.zig"),
+        \\            .target = target,
+        \\            .optimize = optimize,
+        \\        }),
+        \\    });
+        \\    b.installArtifact(exe);
+        \\}
+    });
+    try tmp.dir.createDirPath(io, "src");
+    // PLANTED dead decl: `unused_decl` fires on `dead` and carries a `.fix`
+    // that deletes the whole declaration -- see `lints/unused_decl.zig`.
+    // `main` is left referencing nothing else, so this is the ONLY
+    // diagnostic this tmp project produces.
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "src/main.zig",
+        .data = "fn dead() void {}\npub fn main() void {}\n",
+    });
+    // Same reasoning as the sibling tests above: an explicit, empty
+    // `zippy.zon` stops `loadNearestConfigFrom`'s walk-up at the tmp root
+    // instead of escaping into this repo's own root config.
+    try tmp.dir.writeFile(io, .{ .sub_path = "zippy.zon", .data = ".{}\n" });
+
+    const tmp_abs = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(tmp_abs);
+
+    try git(gpa, io, tmp_abs, &.{ "git", "init" });
+    // Needed to commit in a sandbox with no global git identity configured.
+    try git(gpa, io, tmp_abs, &.{ "git", "config", "user.email", "zippy@test.local" });
+    try git(gpa, io, tmp_abs, &.{ "git", "config", "user.name", "Zippy Test" });
+    try git(gpa, io, tmp_abs, &.{ "git", "add", "-A" });
+    try git(gpa, io, tmp_abs, &.{ "git", "commit", "-m", "init" });
+
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var err: std.Io.Writer.Allocating = .init(gpa);
+    defer err.deinit();
+
+    const code = try mode.run(.{
+        .io = io,
+        .gpa = gpa,
+        .project_root = tmp_abs,
+        .build_args = &.{},
+        .stdout = &out.writer,
+        .stderr = &err.writer,
+        .base_env = &env_map,
+        .use_color = false,
+        .fix_mode = true,
+    });
+
+    if (code == 2 and std.mem.indexOf(u8, err.written(), "FileNotFound") != null) {
+        std.log.warn("skipping --fix e2e test: 'zig' not found on PATH", .{});
+        return error.SkipZigTest;
+    }
+    if (code == 2) {
+        std.debug.print("mode.run --fix failed (exit 2), stderr:\n{s}\n", .{err.written()});
+        return error.BuildRunnerFailed;
+    }
+
+    try std.testing.expectEqual(@as(u8, 0), code);
+    try std.testing.expect(std.mem.indexOf(u8, err.written(), "applied 1 fix") != null);
+
+    const after = try tmp.dir.readFileAlloc(io, "src/main.zig", gpa, .unlimited);
+    defer gpa.free(after);
+    try std.testing.expect(std.mem.indexOf(u8, after, "fn dead") == null);
+    try std.testing.expectEqualStrings("pub fn main() void {}\n", after);
+
+    // The fixed file must still be valid Zig: `unused_decl.zig`'s own unit
+    // tests already prove its deletion span parses cleanly in isolation --
+    // this proves the same holds for a file that went through the REAL
+    // builder-mode/`fix.apply` path end to end, not just the lint's direct
+    // `fixOf()` test helper.
+    const after_z = try gpa.dupeZ(u8, after);
+    defer gpa.free(after_z);
+    var t = try std.zig.Ast.parse(gpa, after_z, .zig);
+    defer t.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), t.errors.len);
+}
+
+// Companion to the test above: the same planted dead decl, but the file has
+// UNCOMMITTED changes when `--fix` runs (planted AFTER the initial commit,
+// never added/committed) and `--allow-dirty` is NOT given. `fix.apply`'s
+// own git-dirty check must refuse to touch it -- proving that refusal is
+// reachable through the real `mode.run` wiring, not just `fix.zig`'s own
+// direct unit test of `apply`.
+test "mode.run --fix: refuses a dirty file without --allow-dirty, file left untouched" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data =
+        \\const std = @import("std");
+        \\pub fn build(b: *std.Build) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const optimize = b.standardOptimizeOption(.{});
+        \\    const exe = b.addExecutable(.{
+        \\        .name = "proj",
+        \\        .root_module = b.createModule(.{
+        \\            .root_source_file = b.path("src/main.zig"),
+        \\            .target = target,
+        \\            .optimize = optimize,
+        \\        }),
+        \\    });
+        \\    b.installArtifact(exe);
+        \\}
+    });
+    try tmp.dir.createDirPath(io, "src");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "src/main.zig",
+        .data = "pub fn main() void {}\n",
+    });
+    try tmp.dir.writeFile(io, .{ .sub_path = "zippy.zon", .data = ".{}\n" });
+
+    const tmp_abs = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(tmp_abs);
+
+    try git(gpa, io, tmp_abs, &.{ "git", "init" });
+    try git(gpa, io, tmp_abs, &.{ "git", "config", "user.email", "zippy@test.local" });
+    try git(gpa, io, tmp_abs, &.{ "git", "config", "user.name", "Zippy Test" });
+    try git(gpa, io, tmp_abs, &.{ "git", "add", "-A" });
+    try git(gpa, io, tmp_abs, &.{ "git", "commit", "-m", "init" });
+
+    // Dirty it on disk WITHOUT committing: the dead decl only shows up AFTER
+    // the commit above, so the file has uncommitted changes when `--fix`
+    // runs below.
+    const dirty_src = "fn dead() void {}\npub fn main() void {}\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = dirty_src });
+
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var err: std.Io.Writer.Allocating = .init(gpa);
+    defer err.deinit();
+
+    const code = try mode.run(.{
+        .io = io,
+        .gpa = gpa,
+        .project_root = tmp_abs,
+        .build_args = &.{},
+        .stdout = &out.writer,
+        .stderr = &err.writer,
+        .base_env = &env_map,
+        .use_color = false,
+        .fix_mode = true,
+        // `allow_dirty` left at its default `false` -- this is the whole
+        // point of this test.
+    });
+
+    if (code == 2 and std.mem.indexOf(u8, err.written(), "FileNotFound") != null) {
+        std.log.warn("skipping --fix e2e test: 'zig' not found on PATH", .{});
+        return error.SkipZigTest;
+    }
+    if (code == 2) {
+        std.debug.print("mode.run --fix failed (exit 2), stderr:\n{s}\n", .{err.written()});
+        return error.BuildRunnerFailed;
+    }
+
+    try std.testing.expect(std.mem.indexOf(u8, err.written(), "refusing to fix") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err.written(), "applied 0 fix") != null);
+
+    const after = try tmp.dir.readFileAlloc(io, "src/main.zig", gpa, .unlimited);
+    defer gpa.free(after);
+    try std.testing.expectEqualStrings(dirty_src, after);
+}
