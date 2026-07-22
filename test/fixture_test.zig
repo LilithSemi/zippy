@@ -155,3 +155,10 @@ test "suppression fixture: directive mutes line 3's discard but not line 4's" {
         .{ .lint = "discarded_error", .line = 4 },
     });
 }
+
+test "suppressed_errors fixture flags the empty and unreachable catches" {
+    try checkFixture(std.testing.allocator, "test/fixtures/suppressed_errors.zig", &.{
+        .{ .lint = "suppressed_errors", .line = 2 }, // `g() catch {};`
+        .{ .lint = "suppressed_errors", .line = 6 }, // `g() catch unreachable;`
+    });
+}

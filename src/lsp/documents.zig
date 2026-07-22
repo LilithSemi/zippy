@@ -31,6 +31,7 @@ const unused_decl = @import("../lints/unused_decl.zig");
 const return_stack_local = @import("../lints/return_stack_local.zig");
 const hidden_allocator = @import("../lints/hidden_allocator.zig");
 const param_ordering = @import("../lints/param_ordering.zig");
+const suppressed_errors = @import("../lints/suppressed_errors.zig");
 
 /// A single open document plus everything derived from it. See the module
 /// doc comment for the ownership contract -- every field here is owned by
@@ -370,6 +371,7 @@ fn descriptionFor(lint_name: []const u8) ?[]const u8 {
         return_stack_local,
         hidden_allocator,
         param_ordering,
+        suppressed_errors,
     }) |mod| {
         if (std.mem.eql(u8, lint_name, mod.name)) return mod.description;
     }

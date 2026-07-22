@@ -33,6 +33,15 @@ const ParamOrderingCfg = struct {
     /// Target position of an allocator param. Default 1 = right after `io`.
     allocator: isize = 1,
 };
+const SuppressedErrorsCfg = struct {
+    severity: ?Severity = null,
+    /// Skip a swallowed `catch` inside a `test` decl. Default off (flag it).
+    exempt_tests: bool = false,
+    /// Skip `w.print()/write*() catch {}` (writer errors). Default off.
+    exempt_writers: bool = false,
+    /// Skip `defer/errdefer expr catch {}` (defer can't propagate). Default off.
+    exempt_defers: bool = false,
+};
 const Groups = struct {
     style: ?Severity = null,
     complexity: ?Severity = null,
@@ -85,6 +94,7 @@ const Lints = struct {
     return_stack_local: LintCfg = .{},
     hidden_allocator: LintCfg = .{},
     param_ordering: ParamOrderingCfg = .{},
+    suppressed_errors: SuppressedErrorsCfg = .{},
 };
 
 default_severity: Severity = .warn,
@@ -145,6 +155,8 @@ pub fn severityFor(cfg: Config, lint_name: []const u8, group: Group) Severity {
             break :blk cfg.lints.hidden_allocator.severity;
         if (std.mem.eql(u8, lint_name, "param_ordering"))
             break :blk cfg.lints.param_ordering.severity;
+        if (std.mem.eql(u8, lint_name, "suppressed_errors"))
+            break :blk cfg.lints.suppressed_errors.severity;
         break :blk null;
     };
     if (per_lint) |s| return s;
@@ -172,6 +184,15 @@ pub fn paramOrderingIo(cfg: Config) isize {
 }
 pub fn paramOrderingAllocator(cfg: Config) isize {
     return cfg.lints.param_ordering.allocator;
+}
+pub fn suppressedErrorsExemptTests(cfg: Config) bool {
+    return cfg.lints.suppressed_errors.exempt_tests;
+}
+pub fn suppressedErrorsExemptWriters(cfg: Config) bool {
+    return cfg.lints.suppressed_errors.exempt_writers;
+}
+pub fn suppressedErrorsExemptDefers(cfg: Config) bool {
+    return cfg.lints.suppressed_errors.exempt_defers;
 }
 
 test "default config resolves to default_severity then group" {
@@ -248,4 +269,29 @@ test "a per-lint dead_file override silences it without silencing unused_decl" {
     defer cfg.deinit(gpa);
     try std.testing.expectEqual(Severity.off, cfg.severityFor("dead_file", .unused));
     try std.testing.expectEqual(Severity.warn, cfg.severityFor("unused_decl", .unused));
+}
+
+test "suppressed_errors defaults to error and exemptions off" {
+    const cfg = Config.default();
+    try std.testing.expectEqual(
+        Severity.@"error",
+        cfg.severityFor("suppressed_errors", .correctness),
+    );
+    try std.testing.expect(!cfg.suppressedErrorsExemptTests());
+    try std.testing.expect(!cfg.suppressedErrorsExemptWriters());
+    try std.testing.expect(!cfg.suppressedErrorsExemptDefers());
+}
+
+test "suppressed_errors exemptions parse from zon" {
+    const gpa = std.testing.allocator;
+    const src =
+        \\.{ .lints = .{ .suppressed_errors = .{
+        \\    .exempt_tests = true, .exempt_defers = true,
+        \\} } }
+    ;
+    var cfg = try Config.loadFromSlice(gpa, src);
+    defer cfg.deinit(gpa);
+    try std.testing.expect(cfg.suppressedErrorsExemptTests());
+    try std.testing.expect(!cfg.suppressedErrorsExemptWriters());
+    try std.testing.expect(cfg.suppressedErrorsExemptDefers());
 }
