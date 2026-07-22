@@ -21,6 +21,7 @@ const inline_container_type = @import("lints/inline_container_type.zig");
 const unused_decl = @import("lints/unused_decl.zig");
 const return_stack_local = @import("lints/return_stack_local.zig");
 const hidden_allocator = @import("lints/hidden_allocator.zig");
+const suppress = @import("suppress.zig");
 
 pub const LintEntry = struct {
     name: []const u8,
@@ -103,6 +104,27 @@ pub fn run(
         ctx.current_severity = sev;
         try entry.run(&ctx);
     }
+
+    // 3. Inline suppression: drop each diagnostic a `// zippy:ignore` directive
+    // mutes. Parse errors (lint "parse") are NEVER suppressible -- a file that
+    // doesn't parse can't be meaningfully linted, so a user can't turn that off.
+    // Compiler `[zig]` errors and `dead_file` are added in `build/mode.zig`, not
+    // here, so they never reach this filter (also non-suppressible, by design).
+    var sup = try suppress.Suppressions.scan(gpa, source.bytes, &source.ast);
+    defer sup.deinit(gpa);
+    var w: usize = 0;
+    for (diags.items) |d| {
+        const is_parse = std.mem.eql(u8, d.lint, "parse");
+        const muted = !is_parse and
+            sup.suppressed(d.lint, Diagnostic.lineColAt(source.bytes, d.byte_offset).line);
+        if (muted) {
+            d.deinit(gpa); // free the dropped diag's message + any owned replacement
+        } else {
+            diags.items[w] = d;
+            w += 1;
+        }
+    }
+    diags.shrinkRetainingCapacity(w);
 }
 
 test "run emits a parse error for malformed source" {
@@ -138,4 +160,64 @@ test "every registered lint has a non-empty description" {
     try std.testing.expect(unused_decl.description.len > 0);
     try std.testing.expect(return_stack_local.description.len > 0);
     try std.testing.expect(hidden_allocator.description.len > 0);
+}
+
+fn runSrc(gpa: std.mem.Allocator, src_text: []const u8) !std.ArrayList(Diagnostic) {
+    var source = try Source.loadFromSlice(gpa, "t.zig", src_text);
+    defer source.deinit(gpa);
+    const cfg = Config.default();
+    var diags: std.ArrayList(Diagnostic) = .empty;
+    errdefer {
+        for (diags.items) |d| d.deinit(gpa);
+        diags.deinit(gpa);
+    }
+    try run(gpa, &source, &cfg, &diags);
+    return diags;
+}
+
+fn countLint(diags: []const Diagnostic, lint: []const u8) usize {
+    var c: usize = 0;
+    for (diags) |d| {
+        if (std.mem.eql(u8, d.lint, lint)) c += 1;
+    }
+    return c;
+}
+
+test "inline suppression drops a matching diagnostic" {
+    const gpa = std.testing.allocator;
+    // discarded_error fires on `_ = g()`; the standalone directive above mutes it.
+    const src = "pub fn f() void {\n    // zippy:ignore discarded_error\n    _ = g();\n}\n" ++
+        "pub fn g() u8 {\n    return 0;\n}\n";
+    var diags = try runSrc(gpa, src);
+    defer {
+        for (diags.items) |d| d.deinit(gpa);
+        diags.deinit(gpa);
+    }
+    try std.testing.expectEqual(@as(usize, 0), countLint(diags.items, "discarded_error"));
+}
+
+test "a non-matching directive leaves the diagnostic firing" {
+    const gpa = std.testing.allocator;
+    // directive names a DIFFERENT lint, so discarded_error still fires.
+    const src = "pub fn f() void {\n    // zippy:ignore naming_convention\n    _ = g();\n}\n" ++
+        "pub fn g() u8 {\n    return 0;\n}\n";
+    var diags = try runSrc(gpa, src);
+    defer {
+        for (diags.items) |d| d.deinit(gpa);
+        diags.deinit(gpa);
+    }
+    try std.testing.expectEqual(@as(usize, 1), countLint(diags.items, "discarded_error"));
+}
+
+test "parse errors are never suppressed" {
+    const gpa = std.testing.allocator;
+    // A syntactically broken file plus a directive naming `parse` -- the parse
+    // error must survive (a file that doesn't parse can't be muted).
+    const src = "// zippy:ignore parse\nconst x = ;\n";
+    var diags = try runSrc(gpa, src);
+    defer {
+        for (diags.items) |d| d.deinit(gpa);
+        diags.deinit(gpa);
+    }
+    try std.testing.expect(countLint(diags.items, "parse") >= 1);
 }

@@ -10,6 +10,7 @@ pub const Config = @import("Config.zig");
 pub const Linter = @import("Linter.zig");
 pub const fix = @import("fix.zig");
 pub const paths = @import("paths.zig");
+pub const suppress = @import("suppress.zig");
 pub const cli = @import("cli.zig");
 pub const build_manifest = @import("build/manifest.zig");
 pub const build_reachable = @import("build/reachable.zig");

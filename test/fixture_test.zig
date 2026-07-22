@@ -143,3 +143,9 @@ test "inline_container_type fixture flags the inline struct and its discards" {
         .{ .lint = "discarded_error", .line = 17 }, // `_ = &used;`
     });
 }
+
+test "suppression fixture: directive mutes line 3's discard but not line 4's" {
+    try checkFixture(std.testing.allocator, "test/fixtures/suppression.zig", &.{
+        .{ .lint = "discarded_error", .line = 4 },
+    });
+}
