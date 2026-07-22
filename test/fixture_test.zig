@@ -33,7 +33,11 @@ fn expectLessThan(_: void, a: Expect, b: Expect) bool {
 /// actual diagnostics are reduced to `(lint, line)` and sorted the same way
 /// before comparing, so the assertion only depends on *what* fired, not the
 /// registry's iteration order.
-fn checkFixture(gpa: std.mem.Allocator, rel_path: []const u8, expected_unsorted: []const Expect) !void {
+fn checkFixture(
+    gpa: std.mem.Allocator,
+    rel_path: []const u8,
+    expected_unsorted: []const Expect,
+) !void {
     var src = try Source.load(std.testing.io, gpa, rel_path);
     defer src.deinit(gpa);
     const cfg = Config.default();
@@ -52,7 +56,10 @@ fn checkFixture(gpa: std.mem.Allocator, rel_path: []const u8, expected_unsorted:
     const actual = try gpa.alloc(Expect, diags.items.len);
     defer gpa.free(actual);
     for (diags.items, 0..) |d, i| {
-        actual[i] = .{ .lint = d.lint, .line = Diagnostic.lineColAt(src.bytes, d.byte_offset).line };
+        actual[i] = .{
+            .lint = d.lint,
+            .line = Diagnostic.lineColAt(src.bytes, d.byte_offset).line,
+        };
     }
     std.mem.sort(Expect, actual, {}, expectLessThan);
 
@@ -70,6 +77,7 @@ test "clean fixture produces no diagnostics" {
 test "line_width fixture flags the one over-limit comment line" {
     try checkFixture(std.testing.allocator, "test/fixtures/line_width.zig", &.{
         .{ .lint = "line_width", .line = 1 },
+        .{ .lint = "unused_decl", .line = 2 }, // private `x` is never referenced
     });
 }
 
@@ -77,6 +85,9 @@ test "naming_convention fixture flags the bad function and bad type names" {
     try checkFixture(std.testing.allocator, "test/fixtures/naming_convention.zig", &.{
         .{ .lint = "naming_convention", .line = 3 }, // `Bad_Name` fn
         .{ .lint = "naming_convention", .line = 4 }, // `myType` const-of-struct
+        .{ .lint = "unused_decl", .line = 1 }, // private `std` is never referenced
+        .{ .lint = "unused_decl", .line = 4 }, // private `myType` is never referenced
+        .{ .lint = "unused_decl", .line = 7 }, // private `GoodType` is never referenced
     });
 }
 
@@ -85,25 +96,38 @@ test "too_many_params fixture flags the six-param fn and its tuple discards" {
         .{ .lint = "too_many_params", .line = 3 }, // `tooMany` has 6 params
         .{ .lint = "discarded_error", .line = 4 }, // `_ = .{ a, b, c, d, e, f };`
         .{ .lint = "discarded_error", .line = 8 }, // `_ = .{ a, b };`
+        .{ .lint = "unused_decl", .line = 1 }, // private `std` is never referenced
     });
 }
 
 test "redundant_else fixture flags only the branch that always returns" {
     try checkFixture(std.testing.allocator, "test/fixtures/redundant_else.zig", &.{
         .{ .lint = "redundant_else", .line = 7 },
+        .{ .lint = "unused_decl", .line = 4 }, // private `classify` is never called
+        .{ .lint = "unused_decl", .line = 13 }, // private `describe` is never called
     });
 }
 
 test "discarded_error fixture flags the one discard" {
     try checkFixture(std.testing.allocator, "test/fixtures/discarded_error.zig", &.{
         .{ .lint = "discarded_error", .line = 9 },
+        .{ .lint = "unused_decl", .line = 8 }, // private `doWork` is never called
+        .{ .lint = "unused_decl", .line = 13 }, // private `useIt` is never called
+    });
+}
+
+test "unused_decl fixture flags the dead private fn but not the referenced one" {
+    try checkFixture(std.testing.allocator, "test/fixtures/unused_decl.zig", &.{
+        .{ .lint = "unused_decl", .line = 4 }, // `deadHelper` is never called
     });
 }
 
 test "inline_container_type fixture flags the inline struct and its discards" {
     try checkFixture(std.testing.allocator, "test/fixtures/inline_container_type.zig", &.{
         .{ .lint = "inline_container_type", .line = 5 }, // inline anon return struct, 4 fields
-        .{ .lint = "discarded_error", .line = 16 }, // `_ = std;`
+        // `_ = std;` (line 16) is no longer flagged: bare-identifier
+        // discards are the idiomatic unused-var/param suppression, not a
+        // silent error discard.
         .{ .lint = "discarded_error", .line = 17 }, // `_ = &used;`
     });
 }

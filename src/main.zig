@@ -58,6 +58,7 @@ pub fn main(init: std.process.Init) !void {
         .stderr = &stderr_writer.interface,
         .stdout_is_tty = stdout_is_tty,
         .stdin = &stdin_reader.interface,
+        .environ_map = init.environ_map,
     });
 
     try stdout_writer.interface.flush();

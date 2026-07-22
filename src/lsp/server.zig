@@ -584,7 +584,7 @@ test "didChange live-relints: a clean open then a bad change publishes a fresh d
     );
     try transport.writeMessage(&input.writer,
         \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":
-        \\{"textDocument":{"uri":"file:///t.zig","text":"const x = 1;\n"}}}
+        \\{"textDocument":{"uri":"file:///t.zig","text":"pub const x = 1;\n"}}}
     );
     try transport.writeMessage(&input.writer,
         \\{"jsonrpc":"2.0","method":"textDocument/didChange","params":

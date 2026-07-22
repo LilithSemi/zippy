@@ -7,7 +7,7 @@ const std = @import("std");
 const Severity = @import("Diagnostic.zig").Severity;
 const Config = @This();
 
-pub const Group = enum { style, complexity, correctness };
+pub const Group = enum { style, complexity, correctness, unused };
 
 /// A nullable severity per lint override.
 const LintCfg = struct {
@@ -43,6 +43,13 @@ const Groups = struct {
     /// no-file path resolved to `.@"error"` -- an inconsistency. Keeping it
     /// here means both paths agree.
     correctness: ?Severity = .@"error",
+    /// The dead-code/unused category (`dead_file` today; more Tier 2/3
+    /// unused-code lints land here later). Left at `null` (falling through
+    /// to `default_severity`, i.e. `.warn`) rather than elevated like
+    /// `correctness`, because dead-code detection is conservative/
+    /// best-effort -- a false positive here is more likely than for a lint
+    /// like `discarded_error`, so it shouldn't fail CI by default.
+    unused: ?Severity = null,
 };
 const Lints = struct {
     naming_convention: LintCfg = .{},
@@ -51,6 +58,16 @@ const Lints = struct {
     too_many_params: TooManyParamsCfg = .{},
     line_width: LineWidthCfg = .{},
     inline_container_type: InlineContainerCfg = .{},
+    unused_decl: LintCfg = .{},
+    /// `dead_file` (the whole-file "nothing compiles this" check) isn't
+    /// itself a `src/lints/` module -- it's computed in `build/mode.zig`
+    /// from the build's reachability graph, not by walking one file's AST --
+    /// but it still resolves its severity through `severityFor`, so it needs
+    /// a slot here too. Without this, the only way to silence `dead_file`
+    /// specifically is `.groups.unused = .off`, which also silences every
+    /// *other* `unused`-group lint (e.g. `unused_decl`) -- too blunt once
+    /// more than one lint shares the group.
+    dead_file: LintCfg = .{},
 };
 
 default_severity: Severity = .warn,
@@ -101,6 +118,10 @@ pub fn severityFor(cfg: Config, lint_name: []const u8, group: Group) Severity {
             break :blk cfg.lints.line_width.severity;
         if (std.mem.eql(u8, lint_name, "inline_container_type"))
             break :blk cfg.lints.inline_container_type.severity;
+        if (std.mem.eql(u8, lint_name, "unused_decl"))
+            break :blk cfg.lints.unused_decl.severity;
+        if (std.mem.eql(u8, lint_name, "dead_file"))
+            break :blk cfg.lints.dead_file.severity;
         break :blk null;
     };
     if (per_lint) |s| return s;
@@ -108,6 +129,7 @@ pub fn severityFor(cfg: Config, lint_name: []const u8, group: Group) Severity {
         .style => cfg.groups.style,
         .complexity => cfg.groups.complexity,
         .correctness => cfg.groups.correctness,
+        .unused => cfg.groups.unused,
     };
     return grp orelse cfg.default_severity;
 }
@@ -170,4 +192,30 @@ test "loadFromSlice applies group and per-lint overrides" {
         cfg.severityFor("discarded_error", .correctness),
     );
     try std.testing.expectEqual(@as(u32, 80), cfg.lineWidthMax());
+}
+
+test "unused group resolves via default then override" {
+    const gpa = std.testing.allocator;
+    const cfg_default = Config.default();
+    // unused is not in the correctness->error default, so it falls to default_severity (.warn)
+    try std.testing.expectEqual(Severity.warn, cfg_default.severityFor("dead_file", .unused));
+
+    const src = ".{ .groups = .{ .unused = .off } }";
+    var cfg = try Config.loadFromSlice(gpa, src);
+    defer cfg.deinit(gpa);
+    try std.testing.expectEqual(Severity.off, cfg.severityFor("dead_file", .unused));
+}
+
+test "unused_decl resolves to warn by default" {
+    const cfg = Config.default();
+    try std.testing.expectEqual(Severity.warn, cfg.severityFor("unused_decl", .unused));
+}
+
+test "a per-lint dead_file override silences it without silencing unused_decl" {
+    const gpa = std.testing.allocator;
+    const src = ".{ .lints = .{ .dead_file = .{ .severity = .off } } }";
+    var cfg = try Config.loadFromSlice(gpa, src);
+    defer cfg.deinit(gpa);
+    try std.testing.expectEqual(Severity.off, cfg.severityFor("dead_file", .unused));
+    try std.testing.expectEqual(Severity.warn, cfg.severityFor("unused_decl", .unused));
 }

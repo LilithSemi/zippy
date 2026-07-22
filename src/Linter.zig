@@ -18,6 +18,7 @@ const too_many_params = @import("lints/too_many_params.zig");
 const redundant_else = @import("lints/redundant_else.zig");
 const discarded_error = @import("lints/discarded_error.zig");
 const inline_container_type = @import("lints/inline_container_type.zig");
+const unused_decl = @import("lints/unused_decl.zig");
 
 pub const LintEntry = struct {
     name: []const u8,
@@ -41,6 +42,7 @@ pub const registry = [_]LintEntry{
         .group = inline_container_type.group,
         .run = inline_container_type.run,
     },
+    .{ .name = unused_decl.name, .group = unused_decl.group, .run = unused_decl.run },
 };
 
 pub fn run(
@@ -120,4 +122,5 @@ test "every registered lint has a non-empty description" {
     try std.testing.expect(redundant_else.description.len > 0);
     try std.testing.expect(discarded_error.description.len > 0);
     try std.testing.expect(inline_container_type.description.len > 0);
+    try std.testing.expect(unused_decl.description.len > 0);
 }

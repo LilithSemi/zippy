@@ -1,0 +1,18 @@
+// This repo's own `test/fixtures/*.zig` files are intentionally
+// unreferenced sample inputs (each one is loaded directly by
+// `test/fixture_test.zig`/lint-specific unit tests, never `@import`ed from
+// a real compile root), so `dead_file` would otherwise flag all of them as
+// dead code on every bare `zippy` run against this repo -- a correct-but-
+// noisy false positive for a repo that dogfoods its own linter. Turned off
+// here rather than silencing it per-file, since the whole fixtures
+// directory is exempt for the same reason.
+//
+// This targets `dead_file` specifically (not the whole `unused` group) so
+// other `unused`-group lints (e.g. `unused_decl`) still run at their normal
+// severity -- a blanket `.groups.unused = .off` would silently disable
+// every lint in the group, not just the one this repo actually needs quiet.
+.{
+    .lints = .{
+        .dead_file = .{ .severity = .off },
+    },
+}

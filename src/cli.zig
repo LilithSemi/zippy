@@ -6,6 +6,8 @@ const Source = @import("Source.zig");
 const Config = @import("Config.zig");
 const Linter = @import("Linter.zig");
 const Diagnostic = @import("Diagnostic.zig");
+const paths = @import("paths.zig");
+const build_mode = @import("build/mode.zig");
 
 const usage =
     \\Usage: zippy [options] [paths...]
@@ -18,11 +20,25 @@ const usage =
     \\                          and NO_COLOR is unset.
     \\  lsp                     Run as a Language Server (LSP over stdio).
     \\
+    \\Bare `zippy` (no paths), run inside a project with a build.zig, runs
+    \\builder mode: it builds the project and lints exactly what's actually
+    \\compiled, plus a dead_file lint for unreferenced .zig files. Passing
+    \\explicit paths lints those files directly and is deprecated in favor
+    \\of builder mode.
+    \\
     \\Lints .zig files (directories are walked). Reads the nearest zippy.zon,
     \\walking up from the current directory; if none is found, built-in
     \\defaults are used.
     \\
 ;
+
+/// Printed to stderr before falling back to static (explicit-paths) mode --
+/// see `run`'s dispatch, below. Static mode is being phased out in favor of
+/// builder mode (which lints exactly the real compile graph, not whatever
+/// paths happen to be passed), but stays fully supported so this is a
+/// heads-up, not a hard error.
+const deprecation_note =
+    "zippy: linting explicit paths is deprecated; run zippy in a project for builder mode\n";
 
 /// The three states `--color` can be set to; `.auto` is the default and
 /// defers to whether stdout is really a terminal (and `NO_COLOR` is unset).
@@ -56,37 +72,11 @@ fn resolveColor(mode: ColorMode, stdout_is_tty: bool) bool {
     };
 }
 
-/// Directory-walk path COMPONENTS that must never be descended into:
-/// generated build output and the compiler's own cache. `.zig-cache` in
-/// particular can be enormous and contains no source a user wrote, so
-/// walking it wastes time at best and risks linting compiler-generated
-/// garbage at worst.
-///
-/// Matched component-exactly (not as a substring) so a legitimately-named
-/// path like `zig-outline/` or `notes.zig-cache.txt` is never mistaken for
-/// the directories being skipped.
-const skip_components = [_][]const u8{ ".zig-cache", "zig-out" };
-
-fn isSkipped(path: []const u8) bool {
-    var it = std.mem.tokenizeScalar(u8, path, std.fs.path.sep);
-    while (it.next()) |component| {
-        for (skip_components) |s| {
-            if (std.mem.eql(u8, component, s)) return true;
-        }
-    }
-    return false;
-}
-
-test "isSkipped matches path components exactly, not substrings" {
-    try std.testing.expect(!isSkipped("zig-outline"));
-    try std.testing.expect(!isSkipped("zig-outline/foo.zig"));
-    try std.testing.expect(!isSkipped("notes.zig-cache.txt"));
-    try std.testing.expect(isSkipped(".zig-cache"));
-    try std.testing.expect(isSkipped(".zig-cache/foo.zig"));
-    try std.testing.expect(isSkipped("sub/.zig-cache/foo.zig"));
-    try std.testing.expect(isSkipped("zig-out"));
-    try std.testing.expect(isSkipped("zig-out/bin/zippy"));
-}
+/// Shared with `build/dead_file.zig`'s dead-file walk -- see `paths.zig`'s
+/// doc comment for why the two need to agree on exactly which subtrees are
+/// skipped, and the `isSkipped`-matches-components-exactly test that moved
+/// there with it.
+const isSkipped = paths.isSkipped;
 
 /// Bundles every argument `run` needs. See the doc comment on `run` for why
 /// this is a struct instead of six positional parameters.
@@ -108,6 +98,16 @@ pub const RunArgs = struct {
     /// `RunArgs` (rather than optional) so callers can't forget to wire a
     /// real stdin through and have `lsp` silently read nothing.
     stdin: *std.Io.Reader,
+    /// The real process environment. Only read by the builder-mode dispatch
+    /// below (forwarded to `mode.run` as `base_env`, which spawns `zig
+    /// build` needing a real `PATH` etc.), but -- like `stdin` above --
+    /// required on every `RunArgs` rather than optional: Zig 0.16's
+    /// `std.Io` interface has no accessor for "the current process's
+    /// environment" (only `std.process.Init`, which only `main.zig` has,
+    /// does), so making this optional would invite a caller to pass `null`
+    /// and have builder mode silently fail later instead of a compile-time
+    /// reminder to wire the real thing through.
+    environ_map: *const std.process.Environ.Map,
 };
 
 /// Entry point shared by `main.zig` and (indirectly) tests. `io` is threaded
@@ -154,11 +154,45 @@ pub fn run(a: RunArgs) !u8 {
         }
         try targets.append(a.gpa, arg);
     }
-    if (targets.items.len == 0) {
-        try a.stderr.writeAll(usage);
-        return 2;
-    }
+    // No explicit path arguments: this is bare `zippy`, which (per the
+    // deprecation note below) is now the PREFERRED way to invoke Zippy --
+    // dispatch to builder mode if the cwd sits inside a project (walking up
+    // for a `build.zig`, mirroring `loadNearestConfig`'s walk-up for
+    // `zippy.zon`). Only when no `build.zig` is found anywhere above cwd
+    // does this fall back to today's "no paths -> usage, exit 2".
+    // Resolved once, up front, and reused by both dispatch branches below
+    // (builder mode and static mode): they must agree on exactly the same
+    // `--color`/TTY/`NO_COLOR` decision, so there is exactly one place that
+    // makes it, not two copies that could drift.
     const use_color = resolveColor(color_mode, a.stdout_is_tty);
+    if (targets.items.len == 0) {
+        const cwd_abs = try std.process.currentPathAlloc(a.io, a.gpa);
+        defer a.gpa.free(cwd_abs);
+        const project_root = (try findProjectRoot(a.io, a.gpa, cwd_abs)) orelse {
+            try a.stderr.writeAll(usage);
+            return 2;
+        };
+        defer a.gpa.free(project_root);
+        // No leftover args to forward: everything in `a.args` was already
+        // consumed above as either `-h`/`--help` (which returned already)
+        // or `--color=`, neither of which `zig build` understands. In
+        // particular `build_args` is unconditionally empty here, so a
+        // `--color=` meant for Zippy can never leak through to the spawned
+        // `zig build` invocation as an argument it doesn't recognize --
+        // it's fully consumed by the parse loop above (resolved into
+        // `use_color`, not appended to `targets`).
+        return build_mode.run(.{
+            .io = a.io,
+            .gpa = a.gpa,
+            .project_root = project_root,
+            .build_args = &.{},
+            .stdout = a.stdout,
+            .stderr = a.stderr,
+            .base_env = a.environ_map,
+            .use_color = use_color,
+        });
+    }
+    try a.stderr.writeAll(deprecation_note);
 
     var cfg = loadNearestConfig(a.io, a.gpa) catch |err| {
         try a.stderr.print("zippy: config error: {s}\n", .{@errorName(err)});
@@ -287,6 +321,32 @@ pub fn loadNearestConfigFrom(io: std.Io, gpa: std.mem.Allocator, start_dir: []co
     }
 }
 
+/// Walks up from `start_dir` looking for a directory containing `build.zig`
+/// -- that's what turns bare `zippy` (no path arguments) into builder mode
+/// instead of today's "no paths" usage error (see `run`'s dispatch, above).
+/// Mirrors `loadNearestConfigFrom`'s walk-up shape exactly, but checks for
+/// existence of `build.zig` rather than reading+parsing `zippy.zon`.
+///
+/// Returns a newly allocated absolute path to the directory found (the
+/// caller frees it with `gpa`), or `null` if no `build.zig` was found before
+/// reaching the filesystem root.
+pub fn findProjectRoot(io: std.Io, gpa: std.mem.Allocator, start_dir: []const u8) !?[]const u8 {
+    var dir_path: []const u8 = start_dir;
+    while (true) {
+        const candidate = try std.fs.path.join(gpa, &.{ dir_path, "build.zig" });
+        defer gpa.free(candidate);
+
+        const found = if (std.Io.Dir.cwd().statFile(io, candidate, .{})) |_|
+            true
+        else |err| switch (err) {
+            error.FileNotFound => false,
+            else => return err,
+        };
+        if (found) return try gpa.dupe(u8, dir_path);
+        dir_path = std.fs.path.dirname(dir_path) orelse return null;
+    }
+}
+
 /// Bundles the fixed-for-the-whole-run arguments `lintFile` needs, keeping
 /// its own parameter count at (this codebase's own) limit of five: this
 /// struct, the path being linted, and the mutable `had_error` flag.
@@ -325,13 +385,26 @@ fn lintFile(a: LintFileArgs, path: []const u8, had_error: *bool) !void {
 // with cwd = the project root (`zig build test`'s working directory), so
 // the relative `test/fixtures/*.zig` paths resolve and config discovery
 // walks up to find no in-repo `zippy.zon`, landing on `Config.default()`.
-test "run: no paths -> usage on stderr, exit 2" {
+// Previously this asserted "no paths -> usage, exit 2" -- but bare `zippy`
+// is no longer just "no paths": per the dispatch added above, it walks up
+// from cwd for a `build.zig` and enters builder mode when one is found, and
+// `zig build test`'s cwd IS this repo's root, which has one. So this now
+// proves the OPPOSITE: real builder mode fires against Zippy's own build
+// graph rather than falling into the "no project found" usage/exit-2 path.
+// It deliberately does NOT assert an exact diagnostic count or exit code --
+// that's self-clean's job elsewhere, and asserting it here would make this
+// test brittle to any future churn in Zippy's own source. It only checks
+// that the OLD branch didn't fire (no "Usage" text) and that builder mode
+// ran to completion without an error bubbling out.
+test "run: no paths, cwd inside this project -> builder mode dispatch (not usage)" {
     const gpa = std.testing.allocator;
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     var err: std.Io.Writer.Allocating = .init(gpa);
     defer err.deinit();
     var stdin: std.Io.Reader = .fixed("");
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
 
     const code = try run(.{
         .io = std.testing.io,
@@ -341,12 +414,149 @@ test "run: no paths -> usage on stderr, exit 2" {
         .stderr = &err.writer,
         .stdin = &stdin,
         .stdout_is_tty = false,
+        .environ_map = &env_map,
     });
 
-    try std.testing.expectEqual(@as(u8, 2), code);
-    try std.testing.expectEqualStrings("", out.written());
-    try std.testing.expect(err.written().len > 0);
-    try std.testing.expect(std.mem.indexOf(u8, err.written(), "Usage") != null);
+    try std.testing.expect(code == 0 or code == 1);
+    try std.testing.expect(std.mem.indexOf(u8, err.written(), "Usage") == null);
+}
+
+// Regression test: the dispatch above branches on `targets.items.len == 0`,
+// NOT `a.args.len == 0` -- `--color=never` is a real element of `a.args` that
+// must be parsed out as a color flag (never appended to `targets`) before
+// that check runs. A naive `a.args.len == 0` check would wrongly treat any
+// non-empty `args` (including flags-only args like this) as "explicit paths
+// given" and fall into static/deprecated-path mode instead of builder mode.
+// This proves flags-only args still route to builder mode: same as the
+// no-args test above (real repo root, `zig build test`'s cwd has a
+// `build.zig`), but with `--color=never` present -- so it fails loud if that
+// branch ever regresses to checking `a.args.len` instead of `targets.len`,
+// or if `--color=never` were ever mistakenly treated as a path target (which
+// would make `collectTargets` stat a file named literally `--color=never`
+// and fail, landing on exit 2 with a stderr message naming that bogus path
+// rather than clean builder-mode output).
+test "run: flags-only args (--color=never), no paths -> builder mode dispatch, not static mode" {
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var err: std.Io.Writer.Allocating = .init(gpa);
+    defer err.deinit();
+    var stdin: std.Io.Reader = .fixed("");
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
+
+    const code = try run(.{
+        .io = std.testing.io,
+        .gpa = gpa,
+        .args = &.{"--color=never"},
+        .stdout = &out.writer,
+        .stderr = &err.writer,
+        .stdin = &stdin,
+        .stdout_is_tty = false,
+        .environ_map = &env_map,
+    });
+
+    try std.testing.expect(code == 0 or code == 1);
+    // Neither the old "no paths -> usage" branch nor the deprecated static
+    // path (which prints this note for every explicit-path invocation) fired.
+    try std.testing.expect(std.mem.indexOf(u8, err.written(), "Usage") == null);
+    try std.testing.expect(std.mem.indexOf(u8, err.written(), "deprecated") == null);
+}
+
+// The old "no build.zig found anywhere above cwd -> usage, exit 2" behavior
+// can no longer be exercised through `run` itself now that it's real (see
+// the test above) -- `run`'s dispatch always walks up from the REAL process
+// cwd, and changing that cwd mid-test-binary would race every other test in
+// this file (the same reason `loadNearestConfig`'s walk-up was never
+// tmpDir-tested directly either; see the malformed-ZON test's comment
+// below). `findProjectRoot` takes an explicit `start_dir` instead of reading
+// the process cwd, so it sidesteps that entirely and can be tmpDir-tested.
+test "findProjectRoot: build.zig in start_dir itself -> found immediately" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = "" });
+
+    const tmp_abs = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(tmp_abs);
+
+    const found = (try findProjectRoot(io, gpa, tmp_abs)).?;
+    defer gpa.free(found);
+    try std.testing.expectEqualStrings(tmp_abs, found);
+}
+
+test "findProjectRoot: walks up through nested subdirectories to a parent build.zig" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = "" });
+    try tmp.dir.createDirPath(io, "a/b/c");
+
+    const tmp_abs = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(tmp_abs);
+    const start = try std.fs.path.join(gpa, &.{ tmp_abs, "a", "b", "c" });
+    defer gpa.free(start);
+
+    const found = (try findProjectRoot(io, gpa, start)).?;
+    defer gpa.free(found);
+    try std.testing.expectEqualStrings(tmp_abs, found);
+}
+
+test "findProjectRoot: no build.zig anywhere above start_dir -> null" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Deliberately NOT `std.testing.tmpDir`: that creates directories under
+    // `.zig-cache/tmp` INSIDE this very project, which has a `build.zig` at
+    // its root -- walking up from there would eventually find it and defeat
+    // the point of this test. A real OS scratch directory (fully outside
+    // this project's tree) is used instead, mirroring how `mode.run` itself
+    // picks its own scratch directory (the `TMPDIR` env var, falling back to
+    // `/tmp`).
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
+    const tmp_base = env_map.get("TMPDIR") orelse "/tmp";
+
+    var random_bytes: [12]u8 = undefined;
+    io.random(&random_bytes);
+    var name_buf: [std.base64.url_safe.Encoder.calcSize(random_bytes.len)]u8 = undefined;
+    const name = std.base64.url_safe.Encoder.encode(&name_buf, &random_bytes);
+    const dir_path = try std.fmt.allocPrint(gpa, "{s}/zippy-findroot-{s}", .{ tmp_base, name });
+    defer gpa.free(dir_path);
+
+    try std.Io.Dir.cwd().createDirPath(io, dir_path);
+    defer std.Io.Dir.cwd().deleteTree(io, dir_path) catch {};
+
+    try std.testing.expect(try findProjectRoot(io, gpa, dir_path) == null);
+}
+
+test "run: explicit path -> deprecation note on stderr before static-mode output" {
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var err: std.Io.Writer.Allocating = .init(gpa);
+    defer err.deinit();
+    var stdin: std.Io.Reader = .fixed("");
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
+
+    const code = try run(.{
+        .io = std.testing.io,
+        .gpa = gpa,
+        .args = &.{"test/fixtures/clean.zig"},
+        .stdout = &out.writer,
+        .stderr = &err.writer,
+        .stdin = &stdin,
+        .stdout_is_tty = false,
+        .environ_map = &env_map,
+    });
+
+    try std.testing.expectEqual(@as(u8, 0), code);
+    try std.testing.expect(std.mem.indexOf(u8, err.written(), "deprecated") != null);
 }
 
 test "run: --help -> usage on stdout, exit 0" {
@@ -356,6 +566,8 @@ test "run: --help -> usage on stdout, exit 0" {
     var err: std.Io.Writer.Allocating = .init(gpa);
     defer err.deinit();
     var stdin: std.Io.Reader = .fixed("");
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
 
     const code = try run(.{
         .io = std.testing.io,
@@ -365,6 +577,7 @@ test "run: --help -> usage on stdout, exit 0" {
         .stderr = &err.writer,
         .stdin = &stdin,
         .stdout_is_tty = false,
+        .environ_map = &env_map,
     });
 
     try std.testing.expectEqual(@as(u8, 0), code);
@@ -379,6 +592,8 @@ test "run: clean fixture -> no diagnostics, exit 0" {
     var err: std.Io.Writer.Allocating = .init(gpa);
     defer err.deinit();
     var stdin: std.Io.Reader = .fixed("");
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
 
     const code = try run(.{
         .io = std.testing.io,
@@ -388,6 +603,7 @@ test "run: clean fixture -> no diagnostics, exit 0" {
         .stderr = &err.writer,
         .stdin = &stdin,
         .stdout_is_tty = false,
+        .environ_map = &env_map,
     });
 
     try std.testing.expectEqual(@as(u8, 0), code);
@@ -401,6 +617,8 @@ test "run: line_width fixture -> warning only, exit 0" {
     var err: std.Io.Writer.Allocating = .init(gpa);
     defer err.deinit();
     var stdin: std.Io.Reader = .fixed("");
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
 
     const code = try run(.{
         .io = std.testing.io,
@@ -410,6 +628,7 @@ test "run: line_width fixture -> warning only, exit 0" {
         .stderr = &err.writer,
         .stdin = &stdin,
         .stdout_is_tty = false,
+        .environ_map = &env_map,
     });
 
     try std.testing.expectEqual(@as(u8, 0), code);
@@ -423,6 +642,8 @@ test "run: discarded_error fixture -> error severity, exit 1" {
     var err: std.Io.Writer.Allocating = .init(gpa);
     defer err.deinit();
     var stdin: std.Io.Reader = .fixed("");
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
 
     const code = try run(.{
         .io = std.testing.io,
@@ -432,6 +653,7 @@ test "run: discarded_error fixture -> error severity, exit 1" {
         .stderr = &err.writer,
         .stdin = &stdin,
         .stdout_is_tty = false,
+        .environ_map = &env_map,
     });
 
     try std.testing.expectEqual(@as(u8, 1), code);
@@ -445,6 +667,8 @@ test "run: --color=always -> ANSI escapes in stdout, exit 1" {
     var err: std.Io.Writer.Allocating = .init(gpa);
     defer err.deinit();
     var stdin: std.Io.Reader = .fixed("");
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
 
     const code = try run(.{
         .io = std.testing.io,
@@ -454,6 +678,7 @@ test "run: --color=always -> ANSI escapes in stdout, exit 1" {
         .stderr = &err.writer,
         .stdin = &stdin,
         .stdout_is_tty = false, // not a tty -- --color=always forces color anyway.
+        .environ_map = &env_map,
     });
 
     try std.testing.expectEqual(@as(u8, 1), code);
@@ -467,6 +692,8 @@ test "run: --color=never -> no ANSI escapes in stdout" {
     var err: std.Io.Writer.Allocating = .init(gpa);
     defer err.deinit();
     var stdin: std.Io.Reader = .fixed("");
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
 
     const code = try run(.{
         .io = std.testing.io,
@@ -476,6 +703,7 @@ test "run: --color=never -> no ANSI escapes in stdout" {
         .stderr = &err.writer,
         .stdin = &stdin,
         .stdout_is_tty = true, // even a real tty must stay plain w/ --color=never.
+        .environ_map = &env_map,
     });
 
     try std.testing.expectEqual(@as(u8, 1), code);
@@ -489,6 +717,8 @@ test "run: auto with stdout_is_tty=false -> no ANSI escapes" {
     var err: std.Io.Writer.Allocating = .init(gpa);
     defer err.deinit();
     var stdin: std.Io.Reader = .fixed("");
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
 
     const code = try run(.{
         .io = std.testing.io,
@@ -498,6 +728,7 @@ test "run: auto with stdout_is_tty=false -> no ANSI escapes" {
         .stderr = &err.writer,
         .stdin = &stdin,
         .stdout_is_tty = false,
+        .environ_map = &env_map,
     });
 
     try std.testing.expectEqual(@as(u8, 1), code);
@@ -511,6 +742,8 @@ test "run: unreadable path -> exit 2" {
     var err: std.Io.Writer.Allocating = .init(gpa);
     defer err.deinit();
     var stdin: std.Io.Reader = .fixed("");
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
 
     const code = try run(.{
         .io = std.testing.io,
@@ -520,6 +753,7 @@ test "run: unreadable path -> exit 2" {
         .stderr = &err.writer,
         .stdin = &stdin,
         .stdout_is_tty = false,
+        .environ_map = &env_map,
     });
 
     try std.testing.expectEqual(@as(u8, 2), code);
@@ -533,6 +767,8 @@ test "run: --color=purple (unrecognized value) -> exit 2, stderr names the bad v
     var err: std.Io.Writer.Allocating = .init(gpa);
     defer err.deinit();
     var stdin: std.Io.Reader = .fixed("");
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
 
     const code = try run(.{
         .io = std.testing.io,
@@ -542,6 +778,7 @@ test "run: --color=purple (unrecognized value) -> exit 2, stderr names the bad v
         .stderr = &err.writer,
         .stdin = &stdin,
         .stdout_is_tty = false,
+        .environ_map = &env_map,
     });
 
     try std.testing.expectEqual(@as(u8, 2), code);
@@ -577,6 +814,8 @@ test "run: 'lsp' subcommand dispatches to the LSP server" {
     defer out.deinit();
     var err: std.Io.Writer.Allocating = .init(gpa);
     defer err.deinit();
+    var env_map = try std.testing.environ.createMap(gpa);
+    defer env_map.deinit();
 
     const code = try run(.{
         .io = std.testing.io,
@@ -586,6 +825,7 @@ test "run: 'lsp' subcommand dispatches to the LSP server" {
         .stderr = &err.writer,
         .stdin = &stdin,
         .stdout_is_tty = false,
+        .environ_map = &env_map,
     });
 
     try std.testing.expectEqual(@as(u8, 0), code);
