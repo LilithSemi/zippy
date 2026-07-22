@@ -28,6 +28,8 @@ const redundant_else = @import("../lints/redundant_else.zig");
 const discarded_error = @import("../lints/discarded_error.zig");
 const inline_container_type = @import("../lints/inline_container_type.zig");
 const unused_decl = @import("../lints/unused_decl.zig");
+const return_stack_local = @import("../lints/return_stack_local.zig");
+const hidden_allocator = @import("../lints/hidden_allocator.zig");
 
 /// A single open document plus everything derived from it. See the module
 /// doc comment for the ownership contract -- every field here is owned by
@@ -348,8 +350,8 @@ pub fn hoverAt(doc: *const Doc, byte_offset: usize) ?HoverInfo {
     return null;
 }
 
-/// Looks up a lint's `description` by `name`, matching against the same six
-/// lint modules `Linter.registry` runs. Not derived FROM `registry` itself
+/// Looks up a lint's `description` by `name`, matching against the same set
+/// of lint modules `Linter.registry` runs. Not derived FROM `registry` itself
 /// because `LintEntry` only carries a `run` function pointer, not the
 /// module's `description` constant -- this is a small parallel lookup
 /// instead of widening `LintEntry`'s shape for a field only the LSP side
@@ -364,6 +366,8 @@ fn descriptionFor(lint_name: []const u8) ?[]const u8 {
         discarded_error,
         inline_container_type,
         unused_decl,
+        return_stack_local,
+        hidden_allocator,
     }) |mod| {
         if (std.mem.eql(u8, lint_name, mod.name)) return mod.description;
     }

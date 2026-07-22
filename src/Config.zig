@@ -7,7 +7,7 @@ const std = @import("std");
 const Severity = @import("Diagnostic.zig").Severity;
 const Config = @This();
 
-pub const Group = enum { style, complexity, correctness, unused };
+pub const Group = enum { style, complexity, correctness, unused, memory };
 
 /// A nullable severity per lint override.
 const LintCfg = struct {
@@ -50,6 +50,12 @@ const Groups = struct {
     /// best-effort -- a false positive here is more likely than for a lint
     /// like `discarded_error`, so it shouldn't fail CI by default.
     unused: ?Severity = null,
+    /// Memory-safety lints (`return_stack_local`, `hidden_allocator`).
+    /// Defaults to `.@"error"` like `correctness` (not the blanket
+    /// `default_severity`): a dangling stack pointer or a hidden global
+    /// allocator is a real bug, and both lints are conservative (near-zero
+    /// false positives), so Clippy-style they fail the build by default.
+    memory: ?Severity = .@"error",
 };
 const Lints = struct {
     naming_convention: LintCfg = .{},
@@ -68,6 +74,8 @@ const Lints = struct {
     /// *other* `unused`-group lint (e.g. `unused_decl`) -- too blunt once
     /// more than one lint shares the group.
     dead_file: LintCfg = .{},
+    return_stack_local: LintCfg = .{},
+    hidden_allocator: LintCfg = .{},
 };
 
 default_severity: Severity = .warn,
@@ -122,6 +130,10 @@ pub fn severityFor(cfg: Config, lint_name: []const u8, group: Group) Severity {
             break :blk cfg.lints.unused_decl.severity;
         if (std.mem.eql(u8, lint_name, "dead_file"))
             break :blk cfg.lints.dead_file.severity;
+        if (std.mem.eql(u8, lint_name, "return_stack_local"))
+            break :blk cfg.lints.return_stack_local.severity;
+        if (std.mem.eql(u8, lint_name, "hidden_allocator"))
+            break :blk cfg.lints.hidden_allocator.severity;
         break :blk null;
     };
     if (per_lint) |s| return s;
@@ -130,6 +142,7 @@ pub fn severityFor(cfg: Config, lint_name: []const u8, group: Group) Severity {
         .complexity => cfg.groups.complexity,
         .correctness => cfg.groups.correctness,
         .unused => cfg.groups.unused,
+        .memory => cfg.groups.memory,
     };
     return grp orelse cfg.default_severity;
 }

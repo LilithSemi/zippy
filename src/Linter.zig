@@ -19,6 +19,8 @@ const redundant_else = @import("lints/redundant_else.zig");
 const discarded_error = @import("lints/discarded_error.zig");
 const inline_container_type = @import("lints/inline_container_type.zig");
 const unused_decl = @import("lints/unused_decl.zig");
+const return_stack_local = @import("lints/return_stack_local.zig");
+const hidden_allocator = @import("lints/hidden_allocator.zig");
 
 pub const LintEntry = struct {
     name: []const u8,
@@ -43,6 +45,16 @@ pub const registry = [_]LintEntry{
         .run = inline_container_type.run,
     },
     .{ .name = unused_decl.name, .group = unused_decl.group, .run = unused_decl.run },
+    .{
+        .name = return_stack_local.name,
+        .group = return_stack_local.group,
+        .run = return_stack_local.run,
+    },
+    .{
+        .name = hidden_allocator.name,
+        .group = hidden_allocator.group,
+        .run = hidden_allocator.run,
+    },
 };
 
 pub fn run(
@@ -124,4 +136,6 @@ test "every registered lint has a non-empty description" {
     try std.testing.expect(discarded_error.description.len > 0);
     try std.testing.expect(inline_container_type.description.len > 0);
     try std.testing.expect(unused_decl.description.len > 0);
+    try std.testing.expect(return_stack_local.description.len > 0);
+    try std.testing.expect(hidden_allocator.description.len > 0);
 }

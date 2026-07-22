@@ -122,6 +122,18 @@ test "unused_decl fixture flags the dead private fn but not the referenced one" 
     });
 }
 
+test "return_stack_local fixture flags the dangling stack pointer return" {
+    try checkFixture(std.testing.allocator, "test/fixtures/return_stack_local.zig", &.{
+        .{ .lint = "return_stack_local", .line = 3 },
+    });
+}
+
+test "hidden_allocator fixture flags the global allocator use" {
+    try checkFixture(std.testing.allocator, "test/fixtures/hidden_allocator.zig", &.{
+        .{ .lint = "hidden_allocator", .line = 4 },
+    });
+}
+
 test "inline_container_type fixture flags the inline struct and its discards" {
     try checkFixture(std.testing.allocator, "test/fixtures/inline_container_type.zig", &.{
         .{ .lint = "inline_container_type", .line = 5 }, // inline anon return struct, 4 fields
