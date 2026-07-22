@@ -1,7 +1,7 @@
 .{
     .name = .zippy,
-    .version = "0.0.0",
-    .fingerprint = 0x61796fc4b1650497,
+    .version = "0.1.0",
+    .fingerprint = 0x61796fc4b11b30b6,
     .minimum_zig_version = "0.16.0",
     .paths = .{
         "build.zig",
