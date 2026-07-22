@@ -169,7 +169,7 @@ test "mode.run: use_color=true adds ANSI escapes to both lint and dead_file outp
     var env_map = try std.testing.environ.createMap(gpa);
     defer env_map.deinit();
 
-    const colored = try runOnce(gpa, io, tmp_abs, &env_map, true);
+    const colored = try runOnce(io, gpa, tmp_abs, &env_map, true);
     defer gpa.free(colored.out);
     defer gpa.free(colored.err);
     if (colored.skip) {
@@ -185,7 +185,7 @@ test "mode.run: use_color=true adds ANSI escapes to both lint and dead_file outp
     try std.testing.expect(std.mem.indexOf(u8, colored.out, "naming_convention") != null);
     try std.testing.expect(std.mem.indexOf(u8, colored.out, "dead_file") != null);
 
-    const plain = try runOnce(gpa, io, tmp_abs, &env_map, false);
+    const plain = try runOnce(io, gpa, tmp_abs, &env_map, false);
     defer gpa.free(plain.out);
     defer gpa.free(plain.err);
     try std.testing.expectEqual(@as(u8, 0), plain.code);
@@ -406,8 +406,8 @@ test "mode.run: merged sort renders an earlier compiler error before a later sam
 const RunOnceResult = struct { code: u8, out: []const u8, err: []const u8, skip: bool };
 
 fn runOnce(
-    gpa: std.mem.Allocator,
     io: std.Io,
+    gpa: std.mem.Allocator,
     project_root: []const u8,
     env_map: *const std.process.Environ.Map,
     use_color: bool,
@@ -444,7 +444,7 @@ fn runOnce(
 /// `fix.zig`'s own `runOrSkip` test helper (that file can't import this one
 /// or vice versa without an unwanted coupling between a unit test and an
 /// e2e test, so the small helper is duplicated rather than shared).
-fn git(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, argv: []const []const u8) !void {
+fn git(io: std.Io, gpa: std.mem.Allocator, dir: []const u8, argv: []const []const u8) !void {
     const r = std.process.run(gpa, io, .{ .argv = argv, .cwd = .{ .path = dir } }) catch |err| {
         if (err == error.FileNotFound) return error.SkipZigTest;
         return err;
@@ -502,12 +502,12 @@ test "mode.run --fix: deletes a dead private fn from a clean git project, exit 0
     const tmp_abs = try tmp.dir.realPathFileAlloc(io, ".", gpa);
     defer gpa.free(tmp_abs);
 
-    try git(gpa, io, tmp_abs, &.{ "git", "init" });
+    try git(io, gpa, tmp_abs, &.{ "git", "init" });
     // Needed to commit in a sandbox with no global git identity configured.
-    try git(gpa, io, tmp_abs, &.{ "git", "config", "user.email", "zippy@test.local" });
-    try git(gpa, io, tmp_abs, &.{ "git", "config", "user.name", "Zippy Test" });
-    try git(gpa, io, tmp_abs, &.{ "git", "add", "-A" });
-    try git(gpa, io, tmp_abs, &.{ "git", "commit", "-m", "init" });
+    try git(io, gpa, tmp_abs, &.{ "git", "config", "user.email", "zippy@test.local" });
+    try git(io, gpa, tmp_abs, &.{ "git", "config", "user.name", "Zippy Test" });
+    try git(io, gpa, tmp_abs, &.{ "git", "add", "-A" });
+    try git(io, gpa, tmp_abs, &.{ "git", "commit", "-m", "init" });
 
     var env_map = try std.testing.environ.createMap(gpa);
     defer env_map.deinit();
@@ -597,11 +597,11 @@ test "mode.run --fix: refuses a dirty file without --allow-dirty, file left unto
     const tmp_abs = try tmp.dir.realPathFileAlloc(io, ".", gpa);
     defer gpa.free(tmp_abs);
 
-    try git(gpa, io, tmp_abs, &.{ "git", "init" });
-    try git(gpa, io, tmp_abs, &.{ "git", "config", "user.email", "zippy@test.local" });
-    try git(gpa, io, tmp_abs, &.{ "git", "config", "user.name", "Zippy Test" });
-    try git(gpa, io, tmp_abs, &.{ "git", "add", "-A" });
-    try git(gpa, io, tmp_abs, &.{ "git", "commit", "-m", "init" });
+    try git(io, gpa, tmp_abs, &.{ "git", "init" });
+    try git(io, gpa, tmp_abs, &.{ "git", "config", "user.email", "zippy@test.local" });
+    try git(io, gpa, tmp_abs, &.{ "git", "config", "user.name", "Zippy Test" });
+    try git(io, gpa, tmp_abs, &.{ "git", "add", "-A" });
+    try git(io, gpa, tmp_abs, &.{ "git", "commit", "-m", "init" });
 
     // Dirty it on disk WITHOUT committing: the dead decl only shows up AFTER
     // the commit above, so the file has uncommitted changes when `--fix`

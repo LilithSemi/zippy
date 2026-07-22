@@ -51,9 +51,9 @@ pub const Fix = struct {
 /// non-empty string (a reconstructed edit, e.g. `redundant_else`), which is.
 /// Callers that own a diagnostics list free each entry with this instead of a
 /// bare `gpa.free(d.message)`, so an owned replacement never leaks.
-pub fn deinit(d: Diagnostic, gpa: std.mem.Allocator) void {
-    gpa.free(d.message);
-    if (d.fix) |f| {
+pub fn deinit(self: Diagnostic, gpa: std.mem.Allocator) void {
+    gpa.free(self.message);
+    if (self.fix) |f| {
         if (f.replacement.len > 0) gpa.free(f.replacement);
     }
 }

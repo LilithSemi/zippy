@@ -61,8 +61,8 @@ const canonicalize = reachable_mod.canonicalize;
 /// Returns a slice the caller owns: free each string with `gpa`, then free
 /// the slice itself.
 pub fn find(
-    gpa: std.mem.Allocator,
     io: std.Io,
+    gpa: std.mem.Allocator,
     project_root: []const u8,
     reachable: *const std.StringHashMapUnmanaged(void),
     dep_dirs: []const []const u8,
@@ -89,7 +89,7 @@ pub fn find(
         canon_dep_dirs.deinit(gpa);
     }
     for (dep_dirs) |dep_dir| {
-        const canonical = (try canonicalize(gpa, io, dep_dir)) orelse continue;
+        const canonical = (try canonicalize(io, gpa, dep_dir)) orelse continue;
         errdefer gpa.free(canonical);
         try canon_dep_dirs.append(gpa, canonical);
     }
@@ -126,7 +126,7 @@ pub fn find(
                 const full = try std.fs.path.join(gpa, &.{ project_root, entry.path });
                 defer gpa.free(full);
 
-                const canonical = (try canonicalize(gpa, io, full)) orelse continue;
+                const canonical = (try canonicalize(io, gpa, full)) orelse continue;
                 errdefer gpa.free(canonical);
                 if (reachable.contains(canonical)) {
                     gpa.free(canonical);
@@ -180,7 +180,7 @@ test "find flags stray .zig not in reachable, ignores .zig-cache" {
     defer reachable.deinit(gpa);
     try reachable.put(gpa, used_abs, {});
 
-    const dead = try find(gpa, io, root_abs, &reachable, &.{});
+    const dead = try find(io, gpa, root_abs, &reachable, &.{});
     defer {
         for (dead) |d| gpa.free(d);
         gpa.free(dead);
@@ -208,7 +208,7 @@ test "find ignores files under zig-out and non-.zig files" {
     var reachable: std.StringHashMapUnmanaged(void) = .empty;
     defer reachable.deinit(gpa);
 
-    const dead = try find(gpa, io, root_abs, &reachable, &.{});
+    const dead = try find(io, gpa, root_abs, &reachable, &.{});
     defer {
         for (dead) |d| gpa.free(d);
         gpa.free(dead);
@@ -235,7 +235,7 @@ test "find flags a .zig file under a nested subdirectory" {
     defer reachable.deinit(gpa);
     try reachable.put(gpa, used_abs, {});
 
-    const dead = try find(gpa, io, root_abs, &reachable, &.{});
+    const dead = try find(io, gpa, root_abs, &reachable, &.{});
     defer {
         for (dead) |d| gpa.free(d);
         gpa.free(dead);
@@ -262,7 +262,7 @@ test "find never flags build.zig, even though it's unreachable" {
     var reachable: std.StringHashMapUnmanaged(void) = .empty;
     defer reachable.deinit(gpa);
 
-    const dead = try find(gpa, io, root_abs, &reachable, &.{});
+    const dead = try find(io, gpa, root_abs, &reachable, &.{});
     defer {
         for (dead) |d| gpa.free(d);
         gpa.free(dead);
@@ -294,7 +294,7 @@ test "find skips a file under a dep_dir, even though it's unreachable" {
     var reachable: std.StringHashMapUnmanaged(void) = .empty;
     defer reachable.deinit(gpa);
 
-    const dead = try find(gpa, io, root_abs, &reachable, &.{dep_dir_abs});
+    const dead = try find(io, gpa, root_abs, &reachable, &.{dep_dir_abs});
     defer {
         for (dead) |d| gpa.free(d);
         gpa.free(dead);

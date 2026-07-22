@@ -102,7 +102,7 @@ pub fn serve(io: std.Io, gpa: std.mem.Allocator, r: *std.Io.Reader, w: *std.Io.W
         .w = w,
         .initialized = false,
         .shutdown_requested = false,
-        .docs = .init(gpa, io),
+        .docs = .init(io, gpa),
     };
     defer server.docs.deinit();
 

@@ -585,7 +585,7 @@ test "fix: redundant_else owned replacement round-trips through a diag list with
 test "fix: a redundant_else offers an LSP quickfix titled 'remove redundant else'" {
     const gpa = std.testing.allocator;
     const documents = @import("../lsp/documents.zig");
-    var docs = documents.Documents.init(gpa, std.testing.io);
+    var docs = documents.Documents.init(std.testing.io, gpa);
     defer docs.deinit();
     try docs.open(
         "file:///t.zig",

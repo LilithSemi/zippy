@@ -30,6 +30,7 @@ const inline_container_type = @import("../lints/inline_container_type.zig");
 const unused_decl = @import("../lints/unused_decl.zig");
 const return_stack_local = @import("../lints/return_stack_local.zig");
 const hidden_allocator = @import("../lints/hidden_allocator.zig");
+const param_ordering = @import("../lints/param_ordering.zig");
 
 /// A single open document plus everything derived from it. See the module
 /// doc comment for the ownership contract -- every field here is owned by
@@ -77,7 +78,7 @@ pub const Documents = struct {
     /// they point to.
     docs: std.StringHashMapUnmanaged(*Doc) = .empty,
 
-    pub fn init(gpa: std.mem.Allocator, io: std.Io) Documents {
+    pub fn init(io: std.Io, gpa: std.mem.Allocator) Documents {
         return .{ .gpa = gpa, .io = io, .docs = .empty };
     }
 
@@ -368,6 +369,7 @@ fn descriptionFor(lint_name: []const u8) ?[]const u8 {
         unused_decl,
         return_stack_local,
         hidden_allocator,
+        param_ordering,
     }) |mod| {
         if (std.mem.eql(u8, lint_name, mod.name)) return mod.description;
     }
@@ -376,7 +378,7 @@ fn descriptionFor(lint_name: []const u8) ?[]const u8 {
 
 test "open then lint yields expected diagnostics with spans" {
     const gpa = std.testing.allocator;
-    var docs: Documents = .init(gpa, std.testing.io);
+    var docs: Documents = .init(std.testing.io, gpa);
     defer docs.deinit();
     try docs.open("file:///t.zig", "fn Bad_Name() void {}\n");
     const doc = docs.get("file:///t.zig").?;
@@ -391,7 +393,7 @@ test "open then lint yields expected diagnostics with spans" {
 
 test "hoverAt returns the covering diagnostic's description" {
     const gpa = std.testing.allocator;
-    var docs: Documents = .init(gpa, std.testing.io);
+    var docs: Documents = .init(std.testing.io, gpa);
     defer docs.deinit();
     try docs.open("file:///t.zig", "fn Bad_Name() void {}\n");
     const doc = docs.get("file:///t.zig").?;
@@ -403,7 +405,7 @@ test "hoverAt returns the covering diagnostic's description" {
 
 test "hoverAt outside any diagnostic span returns null" {
     const gpa = std.testing.allocator;
-    var docs: Documents = .init(gpa, std.testing.io);
+    var docs: Documents = .init(std.testing.io, gpa);
     defer docs.deinit();
     try docs.open("file:///t.zig", "fn Bad_Name() void {}\n");
     const doc = docs.get("file:///t.zig").?;
@@ -414,7 +416,7 @@ test "hoverAt outside any diagnostic span returns null" {
 
 test "toLspDiagnostics ranges match offsetToPosition of the diagnostic span" {
     const gpa = std.testing.allocator;
-    var docs: Documents = .init(gpa, std.testing.io);
+    var docs: Documents = .init(std.testing.io, gpa);
     defer docs.deinit();
     try docs.open("file:///t.zig", "fn Bad_Name() void {}\n");
     const doc = docs.get("file:///t.zig").?;
@@ -438,7 +440,7 @@ test "toLspDiagnostics ranges match offsetToPosition of the diagnostic span" {
 
 test "change replaces text and re-lint reflects it" {
     const gpa = std.testing.allocator;
-    var docs: Documents = .init(gpa, std.testing.io);
+    var docs: Documents = .init(std.testing.io, gpa);
     defer docs.deinit();
     try docs.open("file:///t.zig", "fn Bad_Name() void {}\n");
     const doc1 = docs.get("file:///t.zig").?;
@@ -456,7 +458,7 @@ test "change replaces text and re-lint reflects it" {
 
 test "close drops the doc" {
     const gpa = std.testing.allocator;
-    var docs: Documents = .init(gpa, std.testing.io);
+    var docs: Documents = .init(std.testing.io, gpa);
     defer docs.deinit();
     try docs.open("file:///t.zig", "fn Bad_Name() void {}\n");
     const doc = docs.get("file:///t.zig").?;
@@ -467,7 +469,7 @@ test "close drops the doc" {
 
 test "open/change/close cycle leaves no leaks" {
     const gpa = std.testing.allocator;
-    var docs: Documents = .init(gpa, std.testing.io);
+    var docs: Documents = .init(std.testing.io, gpa);
     defer docs.deinit();
     try docs.open("file:///a.zig", "fn Bad_Name() void {}\n");
     try docs.open("file:///b.zig", "fn ok() void {}\n");
@@ -485,7 +487,7 @@ test "open/change/close cycle leaves no leaks" {
 
 test "get's *Doc pointer stays valid across a map rehash from later opens" {
     const gpa = std.testing.allocator;
-    var docs: Documents = .init(gpa, std.testing.io);
+    var docs: Documents = .init(std.testing.io, gpa);
     defer docs.deinit();
 
     try docs.open("file:///first.zig", "fn Bad_Name() void {}\n");
@@ -514,7 +516,7 @@ test "get's *Doc pointer stays valid across a map rehash from later opens" {
 
 test "codeActionsAt returns the unused_decl fix when the range covers the decl" {
     const gpa = std.testing.allocator;
-    var docs: Documents = .init(gpa, std.testing.io);
+    var docs: Documents = .init(std.testing.io, gpa);
     defer docs.deinit();
     try docs.open("file:///t.zig", "fn dead() void {}\npub fn main() void {}\n");
     const doc = docs.get("file:///t.zig").?;
@@ -529,7 +531,7 @@ test "codeActionsAt returns the unused_decl fix when the range covers the decl" 
 
 test "codeActionsAt matches a zero-width cursor inside the decl name" {
     const gpa = std.testing.allocator;
-    var docs: Documents = .init(gpa, std.testing.io);
+    var docs: Documents = .init(std.testing.io, gpa);
     defer docs.deinit();
     try docs.open("file:///t.zig", "fn dead() void {}\npub fn main() void {}\n");
     const doc = docs.get("file:///t.zig").?;
@@ -542,7 +544,7 @@ test "codeActionsAt matches a zero-width cursor inside the decl name" {
 
 test "codeActionsAt returns empty when the range is away from any fixable diag" {
     const gpa = std.testing.allocator;
-    var docs: Documents = .init(gpa, std.testing.io);
+    var docs: Documents = .init(std.testing.io, gpa);
     defer docs.deinit();
     try docs.open("file:///t.zig", "fn dead() void {}\npub fn main() void {}\n");
     const doc = docs.get("file:///t.zig").?;

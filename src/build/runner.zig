@@ -196,7 +196,7 @@ pub fn main(init: process.Init) !void {
     const manifest_path = graph.environ_map.get("ZIPPY_MANIFEST") orelse
         fatal("ZIPPY_MANIFEST not set", .{});
 
-    const manifest = try collectManifest(arena, gpa, io, builder);
+    const manifest = try collectManifest(io, arena, gpa, builder);
     const json = try std.json.Stringify.valueAlloc(arena, manifest, .{});
     try cwd.writeFile(io, .{ .sub_path = manifest_path, .data = json });
 }
@@ -205,9 +205,9 @@ pub fn main(init: process.Init) !void {
 /// (Tier 1's "what does this project compile" answer) and puts it in
 /// dependency order, then `runSteps` actually runs that graph and captures
 /// each `Step.Compile`'s real compiler errors (Tier 2).
-fn collectManifest(arena: Allocator, gpa: Allocator, io: Io, b: *std.Build) !Manifest {
+fn collectManifest(io: Io, arena: Allocator, gpa: Allocator, b: *std.Build) !Manifest {
     const walk = try walkGraph(arena, b);
-    const errors = try runSteps(arena, gpa, io, walk.order);
+    const errors = try runSteps(io, arena, gpa, walk.order);
     return .{
         .project_root = b.build_root.path orelse ".",
         .roots = walk.roots,
@@ -457,7 +457,7 @@ const RunState = enum { success, skipped, failed, dependency_failure };
 /// compile crashes the whole runner without this check. The skipped-`Run`
 /// case is the same failure mode with a different trigger -- see
 /// `dependencyFailed`'s doc comment.
-fn runSteps(arena: Allocator, gpa: Allocator, io: Io, order: []const *Step) ![]const ManifestError {
+fn runSteps(io: Io, arena: Allocator, gpa: Allocator, order: []const *Step) ![]const ManifestError {
     var root_prog = std.Progress.start(io, .{});
     defer root_prog.end();
 

@@ -80,7 +80,7 @@ fn applyEdits(gpa: std.mem.Allocator, bytes: []const u8, edits: []Fix) !ApplyOne
 /// it returns `false` just like a genuinely dirty file would -- never `true`
 /// on an inconclusive result, since rewriting an uncommitted file the user
 /// never chose to risk is exactly the mistake this check exists to prevent.
-fn isFileClean(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !bool {
+fn isFileClean(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !bool {
     const dir = std.fs.path.dirname(path) orelse ".";
     const base = std.fs.path.basename(path);
     const result = std.process.run(gpa, io, .{
@@ -105,8 +105,8 @@ fn isFileClean(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !bool {
 /// `applied`/`skipped` counts into the running total. `path`s are expected
 /// to be absolute (same contract as the rest of Zippy's file I/O).
 pub fn apply(
-    gpa: std.mem.Allocator,
     io: std.Io,
+    gpa: std.mem.Allocator,
     diags: []const Diagnostic,
     allow_dirty: bool,
     stderr: *std.Io.Writer,
@@ -131,7 +131,7 @@ pub fn apply(
         const path = entry.key_ptr.*;
         const edits = entry.value_ptr;
 
-        if (!allow_dirty and !(try isFileClean(gpa, io, path))) {
+        if (!allow_dirty and !(try isFileClean(io, gpa, path))) {
             try stderr.print(
                 "zippy: refusing to fix '{s}': uncommitted changes " ++
                     "(commit/stash or --allow-dirty)\n",
@@ -147,7 +147,7 @@ pub fn apply(
         const r = try applyEdits(gpa, bytes, edits.items);
         defer gpa.free(r.text);
 
-        try writeFileAtomic(gpa, io, path, r.text);
+        try writeFileAtomic(io, gpa, path, r.text);
 
         result.applied += r.applied;
         result.skipped += r.skipped;
@@ -172,8 +172,8 @@ pub fn apply(
 /// failed write or rename deletes the temp rather than leaving `.tmp` litter
 /// behind.
 fn writeFileAtomic(
-    gpa: std.mem.Allocator,
     io: std.Io,
+    gpa: std.mem.Allocator,
     path: []const u8,
     data: []const u8,
 ) !void {
@@ -249,7 +249,7 @@ test "writeFileAtomic replaces contents and leaves no temp file behind" {
     const abs = try tmp.dir.realPathFileAlloc(io, "f.txt", gpa);
     defer gpa.free(abs);
 
-    try writeFileAtomic(gpa, io, abs, "new contents");
+    try writeFileAtomic(io, gpa, abs, "new contents");
 
     const got = try std.Io.Dir.cwd().readFileAlloc(io, abs, gpa, .unlimited);
     defer gpa.free(got);
@@ -272,8 +272,8 @@ test "writeFileAtomic replaces contents and leaves no temp file behind" {
 /// can't assume are installed. Returns the run result for anything else so
 /// the caller can still assert on a real git failure.
 fn runOrSkip(
-    gpa: std.mem.Allocator,
     io: std.Io,
+    gpa: std.mem.Allocator,
     dir: []const u8,
     argv: []const []const u8,
 ) !std.process.RunResult {
@@ -294,23 +294,23 @@ test "apply refuses a dirty file, fixes it with allow_dirty" {
     defer gpa.free(dir_abs);
 
     // git init the tmp dir; skip the whole test if git isn't available.
-    var r = try runOrSkip(gpa, io, dir_abs, &.{ "git", "init" });
+    var r = try runOrSkip(io, gpa, dir_abs, &.{ "git", "init" });
     gpa.free(r.stdout);
     gpa.free(r.stderr);
 
     // Needed to commit in a sandbox with no global git identity configured.
-    r = try runOrSkip(gpa, io, dir_abs, &.{ "git", "config", "user.email", "zippy@test.local" });
+    r = try runOrSkip(io, gpa, dir_abs, &.{ "git", "config", "user.email", "zippy@test.local" });
     gpa.free(r.stdout);
     gpa.free(r.stderr);
-    r = try runOrSkip(gpa, io, dir_abs, &.{ "git", "config", "user.name", "Zippy Test" });
+    r = try runOrSkip(io, gpa, dir_abs, &.{ "git", "config", "user.name", "Zippy Test" });
     gpa.free(r.stdout);
     gpa.free(r.stderr);
 
     try tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const x = 1;\n" });
-    r = try runOrSkip(gpa, io, dir_abs, &.{ "git", "add", "a.zig" });
+    r = try runOrSkip(io, gpa, dir_abs, &.{ "git", "add", "a.zig" });
     gpa.free(r.stdout);
     gpa.free(r.stderr);
-    r = try runOrSkip(gpa, io, dir_abs, &.{ "git", "commit", "-m", "add a.zig" });
+    r = try runOrSkip(io, gpa, dir_abs, &.{ "git", "commit", "-m", "add a.zig" });
     gpa.free(r.stdout);
     gpa.free(r.stderr);
 
@@ -333,7 +333,7 @@ test "apply refuses a dirty file, fixes it with allow_dirty" {
     var err_buf: [512]u8 = undefined;
     var err_writer = std.Io.Writer.fixed(&err_buf);
 
-    const refused_result = try apply(gpa, io, &diags, false, &err_writer);
+    const refused_result = try apply(io, gpa, &diags, false, &err_writer);
     try std.testing.expectEqual(@as(usize, 0), refused_result.applied);
     try std.testing.expectEqual(@as(usize, 1), refused_result.refused);
     const after_refuse = try tmp.dir.readFileAlloc(io, "a.zig", gpa, .unlimited);
@@ -341,7 +341,7 @@ test "apply refuses a dirty file, fixes it with allow_dirty" {
     try std.testing.expectEqualStrings("const x = 2;\n", after_refuse);
 
     err_writer = std.Io.Writer.fixed(&err_buf);
-    const allowed_result = try apply(gpa, io, &diags, true, &err_writer);
+    const allowed_result = try apply(io, gpa, &diags, true, &err_writer);
     try std.testing.expectEqual(@as(usize, 1), allowed_result.applied);
     try std.testing.expectEqual(@as(usize, 0), allowed_result.refused);
     const after_allow = try tmp.dir.readFileAlloc(io, "a.zig", gpa, .unlimited);

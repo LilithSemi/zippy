@@ -144,6 +144,12 @@ test "inline_container_type fixture flags the inline struct and its discards" {
     });
 }
 
+test "param_ordering fixture flags the allocator placed before io" {
+    try checkFixture(std.testing.allocator, "test/fixtures/param_ordering.zig", &.{
+        .{ .lint = "param_ordering", .line = 2 },
+    });
+}
+
 test "suppression fixture: directive mutes line 3's discard but not line 4's" {
     try checkFixture(std.testing.allocator, "test/fixtures/suppression.zig", &.{
         .{ .lint = "discarded_error", .line = 4 },

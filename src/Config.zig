@@ -25,6 +25,14 @@ const InlineContainerCfg = struct {
     severity: ?Severity = null,
     max_fields: u32 = 3,
 };
+const ParamOrderingCfg = struct {
+    severity: ?Severity = null,
+    /// Target position of an `io`/`std.Io` param. `>= 0` anchors to the front
+    /// (after `self`), `< 0` to the back (`-1` last). Default 0 = first after self.
+    io: isize = 0,
+    /// Target position of an allocator param. Default 1 = right after `io`.
+    allocator: isize = 1,
+};
 const Groups = struct {
     style: ?Severity = null,
     complexity: ?Severity = null,
@@ -76,6 +84,7 @@ const Lints = struct {
     dead_file: LintCfg = .{},
     return_stack_local: LintCfg = .{},
     hidden_allocator: LintCfg = .{},
+    param_ordering: ParamOrderingCfg = .{},
 };
 
 default_severity: Severity = .warn,
@@ -134,6 +143,8 @@ pub fn severityFor(cfg: Config, lint_name: []const u8, group: Group) Severity {
             break :blk cfg.lints.return_stack_local.severity;
         if (std.mem.eql(u8, lint_name, "hidden_allocator"))
             break :blk cfg.lints.hidden_allocator.severity;
+        if (std.mem.eql(u8, lint_name, "param_ordering"))
+            break :blk cfg.lints.param_ordering.severity;
         break :blk null;
     };
     if (per_lint) |s| return s;
@@ -155,6 +166,12 @@ pub fn tooManyParamsMax(cfg: Config) u32 {
 }
 pub fn inlineContainerMaxFields(cfg: Config) u32 {
     return cfg.lints.inline_container_type.max_fields;
+}
+pub fn paramOrderingIo(cfg: Config) isize {
+    return cfg.lints.param_ordering.io;
+}
+pub fn paramOrderingAllocator(cfg: Config) isize {
+    return cfg.lints.param_ordering.allocator;
 }
 
 test "default config resolves to default_severity then group" {

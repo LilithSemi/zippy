@@ -46,8 +46,8 @@ const WorkItem = struct {
 /// Returns a map used as a set (`void` values). The caller owns it: free
 /// every key with `gpa`, then `deinit(gpa)` the map itself.
 pub fn collect(
-    gpa: std.mem.Allocator,
     io: std.Io,
+    gpa: std.mem.Allocator,
     roots: []const []const u8,
 ) !std.StringHashMapUnmanaged(void) {
     var result: std.StringHashMapUnmanaged(void) = .empty;
@@ -73,7 +73,7 @@ pub fn collect(
     while (worklist.pop()) |item| {
         defer gpa.free(item.path);
 
-        const canonical = (try canonicalize(gpa, io, item.path)) orelse continue;
+        const canonical = (try canonicalize(io, gpa, item.path)) orelse continue;
 
         {
             errdefer gpa.free(canonical);
@@ -90,7 +90,7 @@ pub fn collect(
 
         if (!item.recurse) continue; // `@embedFile` target: added, not parsed.
 
-        try expand(gpa, io, canonical, &worklist);
+        try expand(io, gpa, canonical, &worklist);
     }
 
     return result;
@@ -106,7 +106,7 @@ pub fn collect(
 /// reachable would look dead purely from a path-spelling difference (a
 /// symlink, a relative-vs-absolute form, a stray `.`/`..`). Sharing this one
 /// function is what makes that drift impossible instead of merely unlikely.
-pub fn canonicalize(gpa: std.mem.Allocator, io: std.Io, abs_path: []const u8) !?[]const u8 {
+pub fn canonicalize(io: std.Io, gpa: std.mem.Allocator, abs_path: []const u8) !?[]const u8 {
     const Dir = std.Io.Dir;
     const sentineled = Dir.realPathFileAbsoluteAlloc(io, abs_path, gpa) catch |err| switch (err) {
         error.OutOfMemory => return err,
@@ -130,8 +130,8 @@ pub fn canonicalize(gpa: std.mem.Allocator, io: std.Io, abs_path: []const u8) !?
 /// to parse -- is a silent skip (same rationale as `collect`'s doc comment:
 /// not this walk's job to enforce).
 fn expand(
-    gpa: std.mem.Allocator,
     io: std.Io,
+    gpa: std.mem.Allocator,
     path: []const u8,
     worklist: *std.ArrayList(WorkItem),
 ) !void {
@@ -223,7 +223,7 @@ test "collect follows @import chains and @embedFile, dedups, ignores cycles" {
     const shouldnotappear_abs = try rootAbs(io, gpa, tmp.dir, "shouldnotappear.zig");
     defer gpa.free(shouldnotappear_abs);
 
-    var set = try collect(gpa, io, &.{root_abs});
+    var set = try collect(io, gpa, &.{root_abs});
     defer freeSet(gpa, &set);
     // root, a, b, data all reachable (4); the cycle back to root doesn't
     // loop, and data.zig's own @import is never followed.
@@ -244,7 +244,7 @@ test "collect skips a missing @import target without erroring" {
     const root_abs = try rootAbs(io, gpa, tmp.dir, "root.zig");
     defer gpa.free(root_abs);
 
-    var set = try collect(gpa, io, &.{root_abs});
+    var set = try collect(io, gpa, &.{root_abs});
     defer freeSet(gpa, &set);
     // root + a; "nope.zig" doesn't exist, so it's never added.
     try std.testing.expectEqual(@as(usize, 2), set.count());
@@ -271,7 +271,7 @@ test "collect ignores a bare module @import" {
     const std_file_abs = try rootAbs(io, gpa, tmp.dir, "std");
     defer gpa.free(std_file_abs);
 
-    var set = try collect(gpa, io, &.{root_abs});
+    var set = try collect(io, gpa, &.{root_abs});
     defer freeSet(gpa, &set);
     // root + a; "std" names a module, not a file, so it adds nothing, even
     // though a file named `std` actually exists on disk.
@@ -303,7 +303,7 @@ test "collect resolves @import relative to the importing file's own directory" {
     const root_b_abs = try rootAbs(io, gpa, tmp.dir, "b.zig");
     defer gpa.free(root_b_abs);
 
-    var set = try collect(gpa, io, &.{root_abs});
+    var set = try collect(io, gpa, &.{root_abs});
     defer freeSet(gpa, &set);
     // root, sub/a.zig, sub/b.zig (3); the root-level decoy b.zig is never
     // reached.

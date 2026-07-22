@@ -230,7 +230,7 @@ pub fn run(a: RunArgs) !u8 {
     // gets the raw, uncanonicalized `project_root` instead: it canonicalizes
     // each candidate itself before comparing (see its own doc comment) and
     // only needs a directory to open, not a canonical spelling of it.
-    const project_root_canon = (try reachable.canonicalize(a.gpa, a.io, a.project_root)) orelse {
+    const project_root_canon = (try reachable.canonicalize(a.io, a.gpa, a.project_root)) orelse {
         try a.stderr.print("zippy: project root not found: {s}\n", .{a.project_root});
         return 2;
     };
@@ -251,7 +251,7 @@ pub fn run(a: RunArgs) !u8 {
     // dependency exclusion now, but harmless to keep (it still matters if a
     // manifest root ever names a path genuinely outside `project_root` for
     // some other reason).
-    var reached = try reachable.collect(a.gpa, a.io, root_paths);
+    var reached = try reachable.collect(a.io, a.gpa, root_paths);
     defer {
         var it = reached.keyIterator();
         while (it.next()) |k| a.gpa.free(k.*);
@@ -313,8 +313,8 @@ pub fn run(a: RunArgs) !u8 {
     }
 
     const dead = dead_file.find(
-        a.gpa,
         a.io,
+        a.gpa,
         a.project_root,
         &reached,
         parsed.value.dep_dirs,
@@ -430,7 +430,7 @@ pub fn run(a: RunArgs) !u8 {
         if (m.kind == .lint and m.diag.fix != null) try fixable.append(a.gpa, m.diag);
     }
 
-    const fix_result = fix.apply(a.gpa, a.io, fixable.items, a.allow_dirty, a.stderr) catch |err| {
+    const fix_result = fix.apply(a.io, a.gpa, fixable.items, a.allow_dirty, a.stderr) catch |err| {
         try a.stderr.print("zippy: fix apply failed: {s}\n", .{@errorName(err)});
         return 2;
     };
