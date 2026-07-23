@@ -26,7 +26,7 @@ pub fn magnitudeSquared(p: Point) i32 {
 }
 
 pub fn printPoint(p: Point) void {
-    std.debug.print("({d}, {d})\n", .{ p.x, p.y });
+    std.log.debug("({d}, {d})\n", .{ p.x, p.y });
 }
 
 test "addPoints sums components" {

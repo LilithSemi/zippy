@@ -83,9 +83,9 @@ test "line_width fixture flags the one over-limit comment line" {
 
 test "naming_convention fixture flags the bad function and bad type names" {
     try checkFixture(std.testing.allocator, "test/fixtures/naming_convention.zig", &.{
+        .{ .lint = "unused_decl", .line = 1 }, // `const std = @import("std")` is unused
         .{ .lint = "naming_convention", .line = 3 }, // `Bad_Name` fn
         .{ .lint = "naming_convention", .line = 4 }, // `myType` const-of-struct
-        .{ .lint = "unused_decl", .line = 1 }, // private `std` is never referenced
         .{ .lint = "unused_decl", .line = 4 }, // private `myType` is never referenced
         .{ .lint = "unused_decl", .line = 7 }, // private `GoodType` is never referenced
     });
@@ -93,10 +93,10 @@ test "naming_convention fixture flags the bad function and bad type names" {
 
 test "too_many_params fixture flags the six-param fn and its tuple discards" {
     try checkFixture(std.testing.allocator, "test/fixtures/too_many_params.zig", &.{
+        .{ .lint = "unused_decl", .line = 1 }, // `const std = @import("std")` is unused
         .{ .lint = "too_many_params", .line = 3 }, // `tooMany` has 6 params
         .{ .lint = "discarded_error", .line = 4 }, // `_ = .{ a, b, c, d, e, f };`
         .{ .lint = "discarded_error", .line = 8 }, // `_ = .{ a, b };`
-        .{ .lint = "unused_decl", .line = 1 }, // private `std` is never referenced
     });
 }
 
@@ -167,5 +167,11 @@ test "duplicate_case fixture flags the commutative-duplicate arm" {
     try checkFixture(std.testing.allocator, "test/fixtures/duplicate_case.zig", &.{
         .{ .lint = "duplicate_case", .line = 7 }, // `2 => 1 + x` duplicates `1 => x + 1`
         .{ .lint = "unused_decl", .line = 4 }, // private `classify` is never called
+    });
+}
+
+test "no_print fixture flags the debug print call" {
+    try checkFixture(std.testing.allocator, "test/fixtures/no_print.zig", &.{
+        .{ .lint = "no_print", .line = 6 },
     });
 }

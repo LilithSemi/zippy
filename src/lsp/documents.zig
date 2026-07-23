@@ -33,6 +33,8 @@ const hidden_allocator = @import("../lints/hidden_allocator.zig");
 const param_ordering = @import("../lints/param_ordering.zig");
 const suppressed_errors = @import("../lints/suppressed_errors.zig");
 const duplicate_case = @import("../lints/duplicate_case.zig");
+const homeless_try = @import("../lints/homeless_try.zig");
+const no_print = @import("../lints/no_print.zig");
 
 /// A single open document plus everything derived from it. See the module
 /// doc comment for the ownership contract -- every field here is owned by
@@ -374,6 +376,8 @@ fn descriptionFor(lint_name: []const u8) ?[]const u8 {
         param_ordering,
         suppressed_errors,
         duplicate_case,
+        homeless_try,
+        no_print,
     }) |mod| {
         if (std.mem.eql(u8, lint_name, mod.name)) return mod.description;
     }

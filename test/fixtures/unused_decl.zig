@@ -5,7 +5,7 @@ fn deadHelper() void {}
 
 // Live: called from `main` below.
 fn liveHelper() void {
-    std.debug.print("hi\n", .{});
+    std.log.debug("hi\n", .{});
 }
 
 pub fn main() void {

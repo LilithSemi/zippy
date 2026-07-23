@@ -8,6 +8,7 @@ const std = @import("std");
 const Source = @import("Source.zig");
 const Config = @import("Config.zig");
 const Diagnostic = @import("Diagnostic.zig");
+const Semantic = @import("Semantic.zig");
 const Context = @This();
 
 /// The lints' real fault surface: `ctx.report` and every AutoHashMap
@@ -23,6 +24,13 @@ config: *const Config,
 diags: *std.ArrayList(Diagnostic),
 current_lint: []const u8 = "",
 current_severity: Diagnostic.Severity = .warn,
+/// The per-file scope tree, set by `Linter.run` before the registry loop
+/// runs. Defaults to `undefined` (not a pointer-to-empty-struct or similar)
+/// so the many existing hand-built `Context` literals across other lints'
+/// unit tests -- which never touch `semantic` -- keep compiling unchanged;
+/// only a lint that actually queries `ctx.semantic` needs its test to build
+/// a real `Semantic` and set this field first (see `homeless_try`'s tests).
+semantic: *const Semantic = undefined,
 
 /// Appends a diagnostic covering `[start_offset, end_offset)` with
 /// `current_lint`/`current_severity`. The message is duped with `ctx.gpa`

@@ -12,9 +12,9 @@ fn classify(x: i32) []const u8 {
 // Legitimate: neither branch jumps, so the else is meaningful.
 fn describe(x: i32) []const u8 {
     if (x < 0) {
-        std.debug.print("negative\n", .{});
+        std.log.debug("negative\n", .{});
     } else {
-        std.debug.print("non-negative\n", .{});
+        std.log.debug("non-negative\n", .{});
     }
     return "done";
 }

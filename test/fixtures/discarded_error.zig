@@ -12,5 +12,5 @@ fn doWork() void {
 // Legitimate: the computed value is bound and used.
 fn useIt() void {
     const x = compute();
-    std.debug.print("{d}\n", .{x});
+    std.log.debug("{d}\n", .{x});
 }

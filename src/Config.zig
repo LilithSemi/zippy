@@ -33,6 +33,14 @@ const ParamOrderingCfg = struct {
     /// Target position of an allocator param. Default 1 = right after `io`.
     allocator: isize = 1,
 };
+const NoPrintCfg = struct {
+    severity: ?Severity = null,
+    /// Skip a `std.debug.print`/aliased/bare `print(...)` call reached from
+    /// inside a `test` block, or in a file whose path ends `test.zig`. Debug
+    /// prints in test code are common and harmless (tests never ship), so
+    /// this default keeps the lint focused on non-test code. Default on.
+    allow_tests: bool = true,
+};
 const SuppressedErrorsCfg = struct {
     severity: ?Severity = null,
     /// Skip a swallowed `catch` inside a `test` decl. Default off (flag it).
@@ -96,6 +104,8 @@ const Lints = struct {
     param_ordering: ParamOrderingCfg = .{},
     suppressed_errors: SuppressedErrorsCfg = .{},
     duplicate_case: LintCfg = .{},
+    homeless_try: LintCfg = .{},
+    no_print: NoPrintCfg = .{},
 };
 
 default_severity: Severity = .warn,
@@ -160,6 +170,10 @@ pub fn severityFor(cfg: Config, lint_name: []const u8, group: Group) Severity {
             break :blk cfg.lints.suppressed_errors.severity;
         if (std.mem.eql(u8, lint_name, "duplicate_case"))
             break :blk cfg.lints.duplicate_case.severity;
+        if (std.mem.eql(u8, lint_name, "homeless_try"))
+            break :blk cfg.lints.homeless_try.severity;
+        if (std.mem.eql(u8, lint_name, "no_print"))
+            break :blk cfg.lints.no_print.severity;
         break :blk null;
     };
     if (per_lint) |s| return s;
@@ -196,6 +210,9 @@ pub fn suppressedErrorsExemptWriters(cfg: Config) bool {
 }
 pub fn suppressedErrorsExemptDefers(cfg: Config) bool {
     return cfg.lints.suppressed_errors.exempt_defers;
+}
+pub fn noPrintAllowTests(cfg: Config) bool {
+    return cfg.lints.no_print.allow_tests;
 }
 
 test "default config resolves to default_severity then group" {
@@ -288,6 +305,20 @@ test "suppressed_errors defaults to error and exemptions off" {
 test "duplicate_case resolves to warn by default, via the complexity group" {
     const cfg = Config.default();
     try std.testing.expectEqual(Severity.warn, cfg.severityFor("duplicate_case", .complexity));
+}
+
+test "no_print resolves to warn by default via the style group, allow_tests on" {
+    const cfg = Config.default();
+    try std.testing.expectEqual(Severity.warn, cfg.severityFor("no_print", .style));
+    try std.testing.expect(cfg.noPrintAllowTests());
+}
+
+test "no_print allow_tests parses from zon" {
+    const gpa = std.testing.allocator;
+    const src = ".{ .lints = .{ .no_print = .{ .allow_tests = false } } }";
+    var cfg = try Config.loadFromSlice(gpa, src);
+    defer cfg.deinit(gpa);
+    try std.testing.expect(!cfg.noPrintAllowTests());
 }
 
 test "suppressed_errors exemptions parse from zon" {

@@ -12,6 +12,7 @@ const Source = @import("Source.zig");
 const Config = @import("Config.zig");
 const Diagnostic = @import("Diagnostic.zig");
 const Context = @import("Context.zig");
+const Semantic = @import("Semantic.zig");
 const line_width = @import("lints/line_width.zig");
 const naming_convention = @import("lints/naming_convention.zig");
 const too_many_params = @import("lints/too_many_params.zig");
@@ -24,6 +25,8 @@ const hidden_allocator = @import("lints/hidden_allocator.zig");
 const param_ordering = @import("lints/param_ordering.zig");
 const suppressed_errors = @import("lints/suppressed_errors.zig");
 const duplicate_case = @import("lints/duplicate_case.zig");
+const homeless_try = @import("lints/homeless_try.zig");
+const no_print = @import("lints/no_print.zig");
 const suppress = @import("suppress.zig");
 
 pub const LintEntry = struct {
@@ -74,6 +77,16 @@ pub const registry = [_]LintEntry{
         .group = duplicate_case.group,
         .run = duplicate_case.run,
     },
+    .{
+        .name = homeless_try.name,
+        .group = homeless_try.group,
+        .run = homeless_try.run,
+    },
+    .{
+        .name = no_print.name,
+        .group = no_print.group,
+        .run = no_print.run,
+    },
 };
 
 pub fn run(
@@ -109,12 +122,22 @@ pub fn run(
     // with `Diagnostic.deinit(gpa)` exactly once (message plus any owned
     // `fix.replacement`), with no separate arena teardown to order relative
     // to that.
+    //
+    // The scope tree is built ONCE per file, after parse-error emission
+    // (a malformed tree still yields a partial-but-sound `Semantic` -- see
+    // `Semantic.build`'s doc) and before any lint runs, so every lint in the
+    // registry can query the SAME `Semantic` via `ctx.semantic` rather than
+    // each rebuilding its own. It's freed at the end of this scope, after
+    // every lint has had its turn.
     var ctx: Context = .{
         .gpa = gpa,
         .source = source,
         .config = config,
         .diags = diags,
     };
+    var sema = try Semantic.build(gpa, source);
+    defer sema.deinit(gpa);
+    ctx.semantic = &sema;
     for (registry) |entry| {
         const sev = config.severityFor(entry.name, entry.group);
         if (sev == .off) continue;
@@ -181,6 +204,8 @@ test "every registered lint has a non-empty description" {
     try std.testing.expect(param_ordering.description.len > 0);
     try std.testing.expect(suppressed_errors.description.len > 0);
     try std.testing.expect(duplicate_case.description.len > 0);
+    try std.testing.expect(homeless_try.description.len > 0);
+    try std.testing.expect(no_print.description.len > 0);
 }
 
 fn runSrc(gpa: std.mem.Allocator, src_text: []const u8) !std.ArrayList(Diagnostic) {
