@@ -55,6 +55,28 @@ const NoPrintCfg = struct {
 const LeakedAllocationCfg = struct {
     severity: ?Severity = .warn,
 };
+/// `undefined` leaves memory uninitialized (UB if read). All three
+/// exemptions default ON (exempt-by-default), matching this codebase's
+/// bias toward silent over noisy for a heuristic-driven memory lint; the
+/// `x == undefined`/`x != undefined` comparison case ALWAYS flags
+/// regardless of these toggles (see `unsafe_undefined`'s file doc).
+const UnsafeUndefinedCfg = struct {
+    severity: ?Severity = null,
+    /// Skip `var x: [N]T = undefined` (an array-typed local var-decl's
+    /// init). Default on -- an uninitialized fixed-size buffer about to be
+    /// filled (a common, idiomatic pattern) is a false-positive risk
+    /// otherwise. A container FIELD default (`field: [N]T = undefined`)
+    /// is NOT a var-decl, so it stays flagged regardless of this toggle.
+    allow_arrays: bool = true,
+    /// Skip `undefined` reached from inside a `test` block. Default on --
+    /// tests commonly use `undefined` as a placeholder that's overwritten
+    /// before use, and tests never ship.
+    allow_tests: bool = true,
+    /// Skip `undefined` inside a function named `deinit`/`destroy`/`reset`.
+    /// Default on -- poisoning freed/reset memory with `undefined` is good
+    /// practice, not a bug.
+    allow_destructors: bool = true,
+};
 const SuppressedErrorsCfg = struct {
     severity: ?Severity = null,
     /// Skip a swallowed `catch` inside a `test` decl. Default off (flag it).
@@ -122,6 +144,8 @@ const Lints = struct {
     no_print: NoPrintCfg = .{},
     leaked_allocation: LeakedAllocationCfg = .{},
     use_after_free: LintCfg = .{},
+    useless_error_return: LintCfg = .{},
+    unsafe_undefined: UnsafeUndefinedCfg = .{},
 };
 
 default_severity: Severity = .warn,
@@ -194,6 +218,10 @@ pub fn severityFor(cfg: Config, lint_name: []const u8, group: Group) Severity {
             break :blk cfg.lints.leaked_allocation.severity;
         if (std.mem.eql(u8, lint_name, "use_after_free"))
             break :blk cfg.lints.use_after_free.severity;
+        if (std.mem.eql(u8, lint_name, "useless_error_return"))
+            break :blk cfg.lints.useless_error_return.severity;
+        if (std.mem.eql(u8, lint_name, "unsafe_undefined"))
+            break :blk cfg.lints.unsafe_undefined.severity;
         break :blk null;
     };
     if (per_lint) |s| return s;
@@ -233,6 +261,15 @@ pub fn suppressedErrorsExemptDefers(cfg: Config) bool {
 }
 pub fn noPrintAllowTests(cfg: Config) bool {
     return cfg.lints.no_print.allow_tests;
+}
+pub fn unsafeUndefinedAllowArrays(cfg: Config) bool {
+    return cfg.lints.unsafe_undefined.allow_arrays;
+}
+pub fn unsafeUndefinedAllowTests(cfg: Config) bool {
+    return cfg.lints.unsafe_undefined.allow_tests;
+}
+pub fn unsafeUndefinedAllowDestructors(cfg: Config) bool {
+    return cfg.lints.unsafe_undefined.allow_destructors;
 }
 
 test "default config resolves to default_severity then group" {
@@ -353,6 +390,35 @@ test "leaked_allocation resolves to warn by default, NOT the memory group's erro
 test "use_after_free resolves to error by default, via the memory group" {
     const cfg = Config.default();
     try std.testing.expectEqual(Severity.@"error", cfg.severityFor("use_after_free", .memory));
+}
+
+test "useless_error_return resolves to warn by default, via the style group" {
+    const cfg = Config.default();
+    try std.testing.expectEqual(
+        Severity.warn,
+        cfg.severityFor("useless_error_return", .style),
+    );
+}
+
+test "unsafe_undefined resolves to error by default, via the memory group" {
+    const cfg = Config.default();
+    try std.testing.expectEqual(
+        Severity.@"error",
+        cfg.severityFor("unsafe_undefined", .memory),
+    );
+    try std.testing.expect(cfg.unsafeUndefinedAllowArrays());
+    try std.testing.expect(cfg.unsafeUndefinedAllowTests());
+    try std.testing.expect(cfg.unsafeUndefinedAllowDestructors());
+}
+
+test "unsafe_undefined allow_arrays parses from zon" {
+    const gpa = std.testing.allocator;
+    const src = ".{ .lints = .{ .unsafe_undefined = .{ .allow_arrays = false } } }";
+    var cfg = try Config.loadFromSlice(gpa, src);
+    defer cfg.deinit(gpa);
+    try std.testing.expect(!cfg.unsafeUndefinedAllowArrays());
+    try std.testing.expect(cfg.unsafeUndefinedAllowTests());
+    try std.testing.expect(cfg.unsafeUndefinedAllowDestructors());
 }
 
 test "suppressed_errors exemptions parse from zon" {

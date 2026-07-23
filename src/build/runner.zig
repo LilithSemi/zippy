@@ -258,7 +258,13 @@ fn createModuleDependencies(b: *std.Build) Allocator.Error!void {
 }
 
 /// Vendored verbatim from `lib/zig/compiler/build_runner.zig`, alongside
-/// `createModuleDependencies` above -- see its doc comment.
+/// `createModuleDependencies` above -- see its doc comment. Upstream's own
+/// body never actually returns an error (every call it makes is `void`), so
+/// `useless_error_return` correctly flags it -- but "fixing" a verbatim
+/// vendor copy by dropping the `!` would diverge from upstream and make
+/// future re-vendoring harder to diff, so this is a deliberate one-off
+/// suppression rather than an edit.
+// zippy:ignore useless_error_return
 fn createModuleDependenciesForStep(step: *Step) Allocator.Error!void {
     const root_module = if (step.cast(Step.Compile)) |cs| root: {
         break :root cs.root_module;

@@ -137,6 +137,7 @@ test "hidden_allocator fixture flags the global allocator use" {
 test "inline_container_type fixture flags the inline struct and its discards" {
     try checkFixture(std.testing.allocator, "test/fixtures/inline_container_type.zig", &.{
         .{ .lint = "inline_container_type", .line = 5 }, // inline anon return struct, 4 fields
+        .{ .lint = "unsafe_undefined", .line = 13 }, // `var used: Named = undefined;`
         // `_ = std;` (line 16) is no longer flagged: bare-identifier
         // discards are the idiomatic unused-var/param suppression, not a
         // silent error discard.
@@ -185,5 +186,17 @@ test "leaked_allocation fixture flags the never-freed allocation" {
 test "use_after_free fixture flags the use after the free" {
     try checkFixture(std.testing.allocator, "test/fixtures/use_after_free.zig", &.{
         .{ .lint = "use_after_free", .line = 6 },
+    });
+}
+
+test "useless_error_return fixture flags only the fn that never errors" {
+    try checkFixture(std.testing.allocator, "test/fixtures/useless_error_return.zig", &.{
+        .{ .lint = "useless_error_return", .line = 1 },
+    });
+}
+
+test "unsafe_undefined fixture flags the non-destructor undefined write" {
+    try checkFixture(std.testing.allocator, "test/fixtures/unsafe_undefined.zig", &.{
+        .{ .lint = "unsafe_undefined", .line = 2 },
     });
 }

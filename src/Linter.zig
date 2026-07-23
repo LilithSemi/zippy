@@ -29,6 +29,8 @@ const homeless_try = @import("lints/homeless_try.zig");
 const no_print = @import("lints/no_print.zig");
 const leaked_allocation = @import("lints/leaked_allocation.zig");
 const use_after_free = @import("lints/use_after_free.zig");
+const useless_error_return = @import("lints/useless_error_return.zig");
+const unsafe_undefined = @import("lints/unsafe_undefined.zig");
 const suppress = @import("suppress.zig");
 
 pub const LintEntry = struct {
@@ -98,6 +100,16 @@ pub const registry = [_]LintEntry{
         .name = use_after_free.name,
         .group = use_after_free.group,
         .run = use_after_free.run,
+    },
+    .{
+        .name = useless_error_return.name,
+        .group = useless_error_return.group,
+        .run = useless_error_return.run,
+    },
+    .{
+        .name = unsafe_undefined.name,
+        .group = unsafe_undefined.group,
+        .run = unsafe_undefined.run,
     },
 };
 
@@ -220,6 +232,8 @@ test "every registered lint has a non-empty description" {
     try std.testing.expect(no_print.description.len > 0);
     try std.testing.expect(leaked_allocation.description.len > 0);
     try std.testing.expect(use_after_free.description.len > 0);
+    try std.testing.expect(useless_error_return.description.len > 0);
+    try std.testing.expect(unsafe_undefined.description.len > 0);
 }
 
 fn runSrc(gpa: std.mem.Allocator, src_text: []const u8) !std.ArrayList(Diagnostic) {

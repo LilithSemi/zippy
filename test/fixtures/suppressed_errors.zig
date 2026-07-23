@@ -7,5 +7,5 @@ pub fn b() void {
 }
 
 fn g() !void {
-    return;
+    return error.Bad;
 }

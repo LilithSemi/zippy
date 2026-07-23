@@ -30,7 +30,11 @@ current_severity: Diagnostic.Severity = .warn,
 /// unit tests -- which never touch `semantic` -- keep compiling unchanged;
 /// only a lint that actually queries `ctx.semantic` needs its test to build
 /// a real `Semantic` and set this field first (see `homeless_try`'s tests).
-semantic: *const Semantic = undefined,
+// The `undefined` default is never read (Linter.run sets this before any lint
+// runs; the hand-built test Contexts that leave it never touch it). Safe by
+// invariant, which the AST-only unsafe_undefined lint can't see -- hence the
+// trailing ignore directive.
+semantic: *const Semantic = undefined, // zippy:ignore unsafe_undefined
 
 /// Appends a diagnostic covering `[start_offset, end_offset)` with
 /// `current_lint`/`current_severity`. The message is duped with `ctx.gpa`
