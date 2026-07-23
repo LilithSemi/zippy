@@ -162,3 +162,10 @@ test "suppressed_errors fixture flags the empty and unreachable catches" {
         .{ .lint = "suppressed_errors", .line = 6 }, // `g() catch unreachable;`
     });
 }
+
+test "duplicate_case fixture flags the commutative-duplicate arm" {
+    try checkFixture(std.testing.allocator, "test/fixtures/duplicate_case.zig", &.{
+        .{ .lint = "duplicate_case", .line = 7 }, // `2 => 1 + x` duplicates `1 => x + 1`
+        .{ .lint = "unused_decl", .line = 4 }, // private `classify` is never called
+    });
+}

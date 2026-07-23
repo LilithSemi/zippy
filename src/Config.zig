@@ -95,6 +95,7 @@ const Lints = struct {
     hidden_allocator: LintCfg = .{},
     param_ordering: ParamOrderingCfg = .{},
     suppressed_errors: SuppressedErrorsCfg = .{},
+    duplicate_case: LintCfg = .{},
 };
 
 default_severity: Severity = .warn,
@@ -157,6 +158,8 @@ pub fn severityFor(cfg: Config, lint_name: []const u8, group: Group) Severity {
             break :blk cfg.lints.param_ordering.severity;
         if (std.mem.eql(u8, lint_name, "suppressed_errors"))
             break :blk cfg.lints.suppressed_errors.severity;
+        if (std.mem.eql(u8, lint_name, "duplicate_case"))
+            break :blk cfg.lints.duplicate_case.severity;
         break :blk null;
     };
     if (per_lint) |s| return s;
@@ -280,6 +283,11 @@ test "suppressed_errors defaults to error and exemptions off" {
     try std.testing.expect(!cfg.suppressedErrorsExemptTests());
     try std.testing.expect(!cfg.suppressedErrorsExemptWriters());
     try std.testing.expect(!cfg.suppressedErrorsExemptDefers());
+}
+
+test "duplicate_case resolves to warn by default, via the complexity group" {
+    const cfg = Config.default();
+    try std.testing.expectEqual(Severity.warn, cfg.severityFor("duplicate_case", .complexity));
 }
 
 test "suppressed_errors exemptions parse from zon" {

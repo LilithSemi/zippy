@@ -23,6 +23,7 @@ const return_stack_local = @import("lints/return_stack_local.zig");
 const hidden_allocator = @import("lints/hidden_allocator.zig");
 const param_ordering = @import("lints/param_ordering.zig");
 const suppressed_errors = @import("lints/suppressed_errors.zig");
+const duplicate_case = @import("lints/duplicate_case.zig");
 const suppress = @import("suppress.zig");
 
 pub const LintEntry = struct {
@@ -67,6 +68,11 @@ pub const registry = [_]LintEntry{
         .name = suppressed_errors.name,
         .group = suppressed_errors.group,
         .run = suppressed_errors.run,
+    },
+    .{
+        .name = duplicate_case.name,
+        .group = duplicate_case.group,
+        .run = duplicate_case.run,
     },
 };
 
@@ -174,6 +180,7 @@ test "every registered lint has a non-empty description" {
     try std.testing.expect(hidden_allocator.description.len > 0);
     try std.testing.expect(param_ordering.description.len > 0);
     try std.testing.expect(suppressed_errors.description.len > 0);
+    try std.testing.expect(duplicate_case.description.len > 0);
 }
 
 fn runSrc(gpa: std.mem.Allocator, src_text: []const u8) !std.ArrayList(Diagnostic) {
