@@ -27,6 +27,8 @@ const suppressed_errors = @import("lints/suppressed_errors.zig");
 const duplicate_case = @import("lints/duplicate_case.zig");
 const homeless_try = @import("lints/homeless_try.zig");
 const no_print = @import("lints/no_print.zig");
+const leaked_allocation = @import("lints/leaked_allocation.zig");
+const use_after_free = @import("lints/use_after_free.zig");
 const suppress = @import("suppress.zig");
 
 pub const LintEntry = struct {
@@ -86,6 +88,16 @@ pub const registry = [_]LintEntry{
         .name = no_print.name,
         .group = no_print.group,
         .run = no_print.run,
+    },
+    .{
+        .name = leaked_allocation.name,
+        .group = leaked_allocation.group,
+        .run = leaked_allocation.run,
+    },
+    .{
+        .name = use_after_free.name,
+        .group = use_after_free.group,
+        .run = use_after_free.run,
     },
 };
 
@@ -206,6 +218,8 @@ test "every registered lint has a non-empty description" {
     try std.testing.expect(duplicate_case.description.len > 0);
     try std.testing.expect(homeless_try.description.len > 0);
     try std.testing.expect(no_print.description.len > 0);
+    try std.testing.expect(leaked_allocation.description.len > 0);
+    try std.testing.expect(use_after_free.description.len > 0);
 }
 
 fn runSrc(gpa: std.mem.Allocator, src_text: []const u8) !std.ArrayList(Diagnostic) {

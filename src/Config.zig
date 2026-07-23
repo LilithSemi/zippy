@@ -41,6 +41,20 @@ const NoPrintCfg = struct {
     /// this default keeps the lint focused on non-test code. Default on.
     allow_tests: bool = true,
 };
+/// NOTE the DEFAULT is `.warn`, not `null` -- unlike every other per-lint cfg
+/// struct in `Lints`, which default their `severity` to `null` (fall through
+/// to the group). A leaked allocation is a RESOURCE bug, not a memory-safety
+/// one (unlike `return_stack_local`/`hidden_allocator`, its `memory`-group
+/// siblings), and the underlying heuristic (see `alloc_track.zig`) is newer
+/// and less battle-tested than theirs, so it defaults softer than the
+/// group's `.@"error"`. QUIRK this creates: because a non-null per-lint
+/// severity always wins over the group (see `severityFor`'s doc), setting
+/// `.groups.memory = .off` (or any other severity) does NOT retune
+/// `leaked_allocation` -- a user has to override `.lints.leaked_allocation
+/// .severity` directly to change it.
+const LeakedAllocationCfg = struct {
+    severity: ?Severity = .warn,
+};
 const SuppressedErrorsCfg = struct {
     severity: ?Severity = null,
     /// Skip a swallowed `catch` inside a `test` decl. Default off (flag it).
@@ -106,6 +120,8 @@ const Lints = struct {
     duplicate_case: LintCfg = .{},
     homeless_try: LintCfg = .{},
     no_print: NoPrintCfg = .{},
+    leaked_allocation: LeakedAllocationCfg = .{},
+    use_after_free: LintCfg = .{},
 };
 
 default_severity: Severity = .warn,
@@ -174,6 +190,10 @@ pub fn severityFor(cfg: Config, lint_name: []const u8, group: Group) Severity {
             break :blk cfg.lints.homeless_try.severity;
         if (std.mem.eql(u8, lint_name, "no_print"))
             break :blk cfg.lints.no_print.severity;
+        if (std.mem.eql(u8, lint_name, "leaked_allocation"))
+            break :blk cfg.lints.leaked_allocation.severity;
+        if (std.mem.eql(u8, lint_name, "use_after_free"))
+            break :blk cfg.lints.use_after_free.severity;
         break :blk null;
     };
     if (per_lint) |s| return s;
@@ -319,6 +339,20 @@ test "no_print allow_tests parses from zon" {
     var cfg = try Config.loadFromSlice(gpa, src);
     defer cfg.deinit(gpa);
     try std.testing.expect(!cfg.noPrintAllowTests());
+}
+
+test "leaked_allocation resolves to warn by default, NOT the memory group's error" {
+    const cfg = Config.default();
+    // .groups.memory defaults to .@"error" (see Groups.memory's doc), but
+    // LeakedAllocationCfg.severity's own non-null .warn default wins over it
+    // (a non-null per-lint severity always beats the group -- severityFor's
+    // doc). This is the quirk LeakedAllocationCfg's own doc comment flags.
+    try std.testing.expectEqual(Severity.warn, cfg.severityFor("leaked_allocation", .memory));
+}
+
+test "use_after_free resolves to error by default, via the memory group" {
+    const cfg = Config.default();
+    try std.testing.expectEqual(Severity.@"error", cfg.severityFor("use_after_free", .memory));
 }
 
 test "suppressed_errors exemptions parse from zon" {

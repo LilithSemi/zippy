@@ -9,6 +9,7 @@ pub const Source = @import("Source.zig");
 pub const Config = @import("Config.zig");
 pub const Linter = @import("Linter.zig");
 pub const Semantic = @import("Semantic.zig");
+pub const alloc_track = @import("alloc_track.zig");
 pub const ast_eql = @import("ast_eql.zig");
 pub const fix = @import("fix.zig");
 pub const paths = @import("paths.zig");

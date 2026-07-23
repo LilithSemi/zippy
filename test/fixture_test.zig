@@ -175,3 +175,15 @@ test "no_print fixture flags the debug print call" {
         .{ .lint = "no_print", .line = 6 },
     });
 }
+
+test "leaked_allocation fixture flags the never-freed allocation" {
+    try checkFixture(std.testing.allocator, "test/fixtures/leaked_allocation.zig", &.{
+        .{ .lint = "leaked_allocation", .line = 4 },
+    });
+}
+
+test "use_after_free fixture flags the use after the free" {
+    try checkFixture(std.testing.allocator, "test/fixtures/use_after_free.zig", &.{
+        .{ .lint = "use_after_free", .line = 6 },
+    });
+}
