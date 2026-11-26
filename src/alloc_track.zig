@@ -159,7 +159,7 @@ pub fn analyze(
 
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) != .identifier) continue;
         const tok = tree.nodeMainToken(node);
         const scope = sema.nodeScope(node);
@@ -219,10 +219,11 @@ const AllocLocal = struct {
 /// tracking (and thus potentially "leak"-flagging) a local that was never
 /// really an allocation in the first place.
 const alloc_methods = [_][]const u8{
-    "alloc",                   "allocSentinel", "allocWithOptions",
-    "allocWithOptionsRetAddr", "alignedAlloc",  "create",
-    "dupe",                    "dupeZ",         "realloc",
-    "reallocAdvanced",
+    "alloc",        "allocSentinel",           "allocWithOptions",
+    "alignedAlloc", "allocWithOptionsRetAddr", "allocBytesAligned",
+    "create",       "alignedCreate",           "dupe",
+    "dupeSentinel", "print",                   "printSentinel",
+    "realloc",      "reallocAdvanced",
 };
 
 /// Name-only (no type info) heuristic for "this identifier is probably an
@@ -380,7 +381,7 @@ fn parentOf(tree: *const Ast, node: Ast.Node.Index) ?Ast.Node.Index {
 
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const m: Ast.Node.Index = @enumFromInt(idx);
+        const m: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (m == node) continue;
         const m_first = tree.firstToken(m);
         const m_last = tree.lastToken(m);
@@ -407,7 +408,7 @@ fn buildCalleeSet(
 
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         switch (tree.nodeTag(node)) {
             .call, .call_comma, .call_one, .call_one_comma => {},
             else => continue,

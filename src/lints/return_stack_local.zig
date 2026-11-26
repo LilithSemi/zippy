@@ -46,7 +46,7 @@ fn innermostFn(tree: *const Ast, tok: Ast.TokenIndex) ?Ast.Node.Index {
     var best_span: u32 = std.math.maxInt(u32);
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) != .fn_decl) continue;
         const first = tree.firstToken(node);
         const last = tree.lastToken(node);
@@ -72,7 +72,7 @@ fn innermostScope(tree: *const Ast, tok: Ast.TokenIndex) ?Ast.Node.Index {
     var best_span: u32 = std.math.maxInt(u32);
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         const is_scope = tree.nodeTag(node) == .fn_decl or
             tree.fullContainerDecl(&buf, node) != null;
         if (!is_scope) continue;
@@ -95,7 +95,7 @@ fn localDeclInRange(tree: *const Ast, ident: []const u8, fn_node: Ast.Node.Index
     const last = tree.lastToken(fn_node);
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         const decl = tree.fullVarDecl(node) orelse continue;
         const name_tok = decl.ast.mut_token + 1;
         if (name_tok < first or name_tok > last) continue;
@@ -111,7 +111,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
     const tree = &ctx.source.ast;
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) != .@"return") continue;
         const operand = tree.nodeData(node).opt_node.unwrap() orelse continue;
         if (tree.nodeTag(operand) != .address_of) continue;

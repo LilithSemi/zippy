@@ -122,7 +122,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
     const allow_tests = ctx.config.noPrintAllowTests();
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         switch (tree.nodeTag(node)) {
             .call, .call_comma, .call_one, .call_one_comma => {},
             else => continue,

@@ -183,7 +183,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
     const sema = ctx.semantic;
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) != .@"try") continue;
         try checkTry(ctx, tree, sema, node);
     }

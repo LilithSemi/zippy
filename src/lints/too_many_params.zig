@@ -29,7 +29,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
     var fn_buf: [1]Ast.Node.Index = undefined;
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         // See the module doc comment: skip `fn_decl` so each function is
         // matched exactly once, via its underlying `fn_proto*` node.
         if (tree.nodeTag(node) == .fn_decl) continue;

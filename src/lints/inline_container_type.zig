@@ -56,7 +56,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
     {
         var idx: u32 = 0;
         while (idx < tree.nodes.len) : (idx += 1) {
-            const node: Ast.Node.Index = @enumFromInt(idx);
+            const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
             if (tree.fullVarDecl(node)) |decl| {
                 if (decl.ast.init_node.unwrap()) |init_node| try named.put(init_node, {});
                 continue;
@@ -73,7 +73,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
     var buf: [2]Ast.Node.Index = undefined;
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         const container = tree.fullContainerDecl(&buf, node) orelse continue;
         // The file root node (`.root`) also matches `fullContainerDecl` --
         // that's Zig's "this file is a struct" idiom, where top-level

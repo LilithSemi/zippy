@@ -176,7 +176,7 @@ pub fn build(gpa: std.mem.Allocator, source: *const Source) std.mem.Allocator.Er
     // built-in root scope below rather than as a discovered creator.
     var idx: u32 = 1;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (scopeKindFor(tree, node)) |kind| {
             try creators.append(gpa, .{
                 .node = node,
@@ -191,7 +191,7 @@ pub fn build(gpa: std.mem.Allocator, source: *const Source) std.mem.Allocator.Er
 
     idx = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         node_scope[idx] = innermostScopeId(tree, creators.items, node);
     }
 
@@ -203,7 +203,7 @@ pub fn build(gpa: std.mem.Allocator, source: *const Source) std.mem.Allocator.Er
         // A creator's own `node_scope` entry (computed above, excluding
         // itself) IS the scope it's declared in -- see the file doc.
         scopes.appendAssumeCapacity(.{
-            .parent = node_scope[@intFromEnum(c.node)],
+            .parent = node_scope[@backingInt(c.node)],
             .node = c.node,
             .kind = c.kind,
         });
@@ -230,7 +230,7 @@ pub fn build(gpa: std.mem.Allocator, source: *const Source) std.mem.Allocator.Er
     };
     idx = 1;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         try declarer.declareNode(node, node_scope[idx]);
     }
 
@@ -244,7 +244,7 @@ pub fn build(gpa: std.mem.Allocator, source: *const Source) std.mem.Allocator.Er
     errdefer refs.deinit(gpa);
     idx = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         // A declaration's OWN name (e.g. the `foo` in `fn foo()`) is a
         // token, never a `.identifier` NODE, so this loop only ever sees
         // USE sites -- no need to exclude decl-name nodes explicitly. Same
@@ -675,7 +675,7 @@ fn innermostScopeId(tree: *const Ast, creators: []const Creator, node: Ast.Node.
 }
 
 pub fn nodeScope(self: *const Semantic, node: Ast.Node.Index) Scope.Id {
-    return self.node_scope[@intFromEnum(node)];
+    return self.node_scope[@backingInt(node)];
 }
 
 /// Convenience accessor so callers can write `sema.symbol(id).name` instead
@@ -771,7 +771,7 @@ pub fn iterParents(self: *const Semantic, id: Scope.Id) ParentIterator {
 fn findIdentifierNode(tree: *const Ast, name: []const u8) ?Ast.Node.Index {
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) != .identifier) continue;
         if (std.mem.eql(u8, tree.tokenSlice(tree.nodeMainToken(node)), name)) return node;
     }

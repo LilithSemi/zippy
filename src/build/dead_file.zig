@@ -53,7 +53,7 @@ const canonicalize = reachable_mod.canonicalize;
 /// dependency's build-root directory, absolute -- a file under any of these
 /// is skipped exactly like `.zig-cache`/`zig-out`, never flagged dead. This
 /// matters because a dependency can be vendored UNDER `project_root` itself
-/// (e.g. `zig-pkg/uefi-<hash>/`, see `runner.zig`'s `dependencyDir`), where
+/// (e.g. `zig-pkg/uefi-<hash>/`, see `bsp.zig`'s `Graph.resolve`), where
 /// this walk would otherwise find its files and -- since they're never a
 /// project compile root and so never in `reachable` either -- wrongly report
 /// third-party source as dead project code.
@@ -167,7 +167,7 @@ test "find flags stray .zig not in reachable, ignores .zig-cache" {
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "used.zig", .data = "const x = 1;\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "stray.zig", .data = "const y = 2;\n" });
-    // Matches the real Zig 0.16 local cache dir name (dot-prefixed), and
+    // Matches the real Zig local cache dir name (dot-prefixed), and
     // `skip_components` above, which skips it component-exactly.
     try tmp.dir.createDirPath(io, ".zig-cache");
     try tmp.dir.writeFile(io, .{ .sub_path = ".zig-cache/gen.zig", .data = "const z = 3;\n" });
@@ -280,7 +280,7 @@ test "find skips a file under a dep_dir, even though it's unreachable" {
     defer tmp.cleanup();
     // Mirrors a dependency vendored UNDER the project tree (e.g.
     // `zig-pkg/uefi-<hash>/uefi.zig`, see this file's doc comment and
-    // `runner.zig`'s `dependencyDir`): `dep/vendored.zig` is neither a
+    // `bsp.zig`'s `Graph.resolve`): `dep/vendored.zig` is neither a
     // project compile root nor reachable from one, so without the `dep_dirs`
     // skip it would look exactly like a dead project file.
     try tmp.dir.createDirPath(io, "dep");

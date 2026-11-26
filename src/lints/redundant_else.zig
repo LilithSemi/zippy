@@ -237,7 +237,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
     const tree = &ctx.source.ast;
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         const full = tree.fullIf(node) orelse continue;
         if (full.ast.else_expr.unwrap() == null) continue;
         if (!endsInJump(tree, full.ast.then_expr)) continue;
@@ -503,9 +503,9 @@ fn applyFirstFix(
 }
 
 fn expectFixParses(gpa: std.mem.Allocator, after: []const u8) !void {
-    const z = try gpa.dupeZ(u8, after);
+    const z = try gpa.dupeSentinel(u8, after, 0);
     defer gpa.free(z);
-    var t = try std.zig.Ast.parse(gpa, z, .zig);
+    var t = try std.zig.Ast.parse(gpa, z, .{});
     defer t.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 0), t.errors.len);
 }

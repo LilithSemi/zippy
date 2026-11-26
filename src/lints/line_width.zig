@@ -49,7 +49,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
 
 test "flags a line wider than the configured max" {
     const gpa = std.testing.allocator;
-    const long = "const x = \"" ++ ("a" ** 120) ++ "\";\nconst y = 1;\n";
+    const long = "const x = \"" ++ @as([120]u8, @splat('a')) ++ "\";\nconst y = 1;\n";
     var src = try Source.loadFromSlice(gpa, "t.zig", long);
     defer src.deinit(gpa);
     var cfg = Config.default();

@@ -55,7 +55,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
     const tree = &ctx.source.ast;
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         const sw = tree.fullSwitch(node) orelse continue;
         const cases = sw.ast.cases;
         for (1..cases.len) |j| {

@@ -1,10 +1,10 @@
 //! Thin process entry point. All real behavior lives in `cli.zig` so it can
-//! be tested without a process boundary; this file only wires up the zig
-//! 0.16 runtime-provided args/io/allocator, hands them to `cli.run`, flushes
+//! be tested without a process boundary; this file only wires up the
+//! runtime-provided args/io/allocator, hands them to `cli.run`, flushes
 //! output, and exits with the code `cli.run` decided.
 //!
 //! `main` takes `std.process.Init` (rather than being a bare `pub fn main()
-//! !void`) because that's how the 0.16 runtime hands over a real `std.Io`
+//! !void`) because that is how the runtime hands over a real `std.Io`
 //! (backed by `std.Io.Threaded`, with leak-checking wired up in Debug
 //! builds) plus a `gpa` and the process args, without this file having to
 //! construct any of those itself.

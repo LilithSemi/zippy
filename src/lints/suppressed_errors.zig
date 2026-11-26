@@ -124,7 +124,7 @@ fn isWriterCall(tree: *const Ast, caught: Ast.Node.Index) bool {
 fn inTestDecl(tree: *const Ast, tok: Ast.TokenIndex) bool {
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) != .test_decl) continue;
         if (tree.firstToken(node) <= tok and tok <= tree.lastToken(node)) return true;
     }
@@ -142,13 +142,9 @@ fn buildDeferSet(
     errdefer set.deinit(gpa);
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         switch (tree.nodeTag(node)) {
-            .@"defer" => try set.put(gpa, tree.nodeData(node).node, {}),
-            .@"errdefer" => {
-                _, const expr = tree.nodeData(node).opt_token_and_node;
-                try set.put(gpa, expr, {});
-            },
+            .@"defer", .@"errdefer" => try set.put(gpa, tree.nodeData(node).node, {}),
             else => {},
         }
     }
@@ -167,7 +163,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
 
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) != .@"catch") continue;
         const caught, const body = tree.nodeData(node).node_and_node;
         const catch_tok = tree.nodeMainToken(node);
@@ -291,7 +287,6 @@ test "exempt_tests silences a catch in a test; default flags it" {
         gpa,
         ".{ .lints = .{ .suppressed_errors = .{ .exempt_tests = true } } }",
     );
-    defer exempt_cfg.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 0), try countDiags(gpa, &exempt_cfg, s));
 }
 
@@ -308,7 +303,6 @@ test "exempt_writers silences a writer-shaped call; default flags it" {
         gpa,
         ".{ .lints = .{ .suppressed_errors = .{ .exempt_writers = true } } }",
     );
-    defer exempt_cfg.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 0), try countDiags(gpa, &exempt_cfg, s));
 }
 
@@ -321,7 +315,6 @@ test "exempt_writers doesn't exempt a non-call caught expression" {
         gpa,
         ".{ .lints = .{ .suppressed_errors = .{ .exempt_writers = true } } }",
     );
-    defer exempt_cfg.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 1), try countDiags(gpa, &exempt_cfg, s));
 }
 
@@ -338,7 +331,6 @@ test "exempt_defers silences a defer's direct catch; default flags it" {
         gpa,
         ".{ .lints = .{ .suppressed_errors = .{ .exempt_defers = true } } }",
     );
-    defer exempt_cfg.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 0), try countDiags(gpa, &exempt_cfg, s));
 }
 
@@ -349,6 +341,5 @@ test "exempt_defers also silences an errdefer's direct catch" {
         gpa,
         ".{ .lints = .{ .suppressed_errors = .{ .exempt_defers = true } } }",
     );
-    defer exempt_cfg.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 0), try countDiags(gpa, &exempt_cfg, s));
 }

@@ -3,21 +3,23 @@
 Clippy for Zig. A linter that, like `cargo clippy`, drives your build system and
 lints exactly what actually compiles.
 
-Requires Zig 0.16.0.
+Requires Zig 0.17.1.
 
 ## What it does
 
-Run `zippy` with no arguments inside a project that has a `build.zig`. Zippy runs
-your build with an embedded custom build runner, walks the real compile graph, and
-lints exactly the source files that are actually compiled (following
-`@import`/`@embedFile` reachability from the real roots). It also:
+Run `zippy` with no arguments inside a project that has a `build.zig`. Zippy
+drives your build over the Zig build system protocol (`zig build --listen=-`),
+walks the real compile graph, and lints exactly the source files that are
+actually compiled (following `@import`/`@embedFile` reachability from the real
+roots). It builds only the compile steps your top-level steps reach, plus what
+they depend on (code generators included), and never runs your program or
+tests. It also:
 
 - surfaces the Zig compiler's own errors (type errors, undeclared identifiers,
   unused locals) merged inline with the lints, tagged `[zig]`, so one run gives
   you both,
 - flags `.zig` files present in the tree but part of no compilation (`dead_file`),
-- ships as a single static binary (the build runner is embedded, written to a
-  temp file at run time, so there is no sidecar to install).
+- ships as a single static binary with no sidecar to install.
 
 Output reads like `zig build` errors, so editors and CI that already parse Zig
 diagnostics keep working.

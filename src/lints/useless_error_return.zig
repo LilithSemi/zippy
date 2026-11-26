@@ -151,7 +151,7 @@ fn functionScopeOf(
 fn canError(tree: *const Ast, sema: *const Semantic, fn_scope: Semantic.Scope.Id) bool {
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         const is_signal = switch (tree.nodeTag(node)) {
             .@"try" => true,
             .@"return" => !isCertainlyNonError(tree, node),
@@ -188,7 +188,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
     const sema = ctx.semantic;
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) != .fn_decl) continue;
         try checkFn(ctx, tree, sema, node);
     }

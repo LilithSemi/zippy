@@ -60,7 +60,7 @@ fn inMain(tree: *const Ast, tok: Ast.TokenIndex) bool {
     var buf: [1]Ast.Node.Index = undefined;
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) != .fn_decl) continue;
         const proto = tree.fullFnProto(&buf, node) orelse continue;
         const name_tok = proto.name_token orelse continue;
@@ -74,7 +74,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
     const tree = &ctx.source.ast;
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) != .field_access) continue;
         const recv, const field_tok = tree.nodeData(node).node_and_token;
         const field = tree.tokenSlice(field_tok);

@@ -54,7 +54,7 @@ const Key = struct {
     bucket: Bucket,
     pos: isize,
     fn less(a: Key, b: Key) bool {
-        if (a.bucket != b.bucket) return @intFromEnum(a.bucket) < @intFromEnum(b.bucket);
+        if (a.bucket != b.bucket) return @backingInt(a.bucket) < @backingInt(b.bucket);
         return a.pos < b.pos;
     }
 };
@@ -123,7 +123,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
     var fn_buf: [1]Ast.Node.Index = undefined;
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) == .fn_decl) continue; // match each fn once
         const proto = tree.fullFnProto(&fn_buf, node) orelse continue;
 
@@ -230,7 +230,6 @@ test "configurable: allocator = -1 requires the allocator last" {
         gpa,
         ".{ .lints = .{ .param_ordering = .{ .allocator = -1 } } }",
     );
-    defer cfg.deinit(gpa);
     const alloc_last = "pub fn f(io: std.Io, x: u8, gpa: std.mem.Allocator) void {}\n";
     try std.testing.expectEqual(@as(usize, 0), try countDiags(gpa, &cfg, alloc_last));
     const alloc_not_last = "pub fn f(io: std.Io, gpa: std.mem.Allocator, x: u8) void {}\n";

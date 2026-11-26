@@ -115,8 +115,7 @@ pub const Documents = struct {
         errdefer self.gpa.free(owned_path);
         const owned_text = try self.gpa.dupe(u8, text);
         errdefer self.gpa.free(owned_text);
-        var config = try self.resolveConfig(owned_path);
-        errdefer config.deinit(self.gpa);
+        const config = try self.resolveConfig(owned_path);
 
         const doc = try self.gpa.create(Doc);
         errdefer self.gpa.destroy(doc);
@@ -210,7 +209,6 @@ pub const Documents = struct {
         self.gpa.free(doc.uri);
         self.gpa.free(doc.path);
         self.gpa.free(doc.text);
-        doc.config.deinit(self.gpa);
         freeDiagMessages(self.gpa, doc.last_diags);
         self.gpa.free(doc.last_diags);
         self.gpa.destroy(doc);

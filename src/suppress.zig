@@ -132,7 +132,7 @@ fn hasNonWhitespace(s: []const u8) bool {
 }
 
 fn scanSrc(gpa: std.mem.Allocator, src: [:0]const u8) !Suppressions {
-    var tree = try std.zig.Ast.parse(gpa, src, .zig);
+    var tree = try std.zig.Ast.parse(gpa, src, .{});
     defer tree.deinit(gpa);
     // Name slices in the result borrow from `src` (a static test literal here),
     // NOT from `tree`, so deinit'ing the tree is fine.

@@ -82,7 +82,7 @@ fn collectComparisonOperands(
     errdefer set.deinit(gpa);
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         switch (tree.nodeTag(node)) {
             .equal_equal, .bang_equal => {},
             else => continue,
@@ -101,7 +101,7 @@ fn collectComparisonOperands(
 fn isArrayVarDeclInit(tree: *const Ast, node: Ast.Node.Index) bool {
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const decl_node: Ast.Node.Index = @enumFromInt(idx);
+        const decl_node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         const decl = tree.fullVarDecl(decl_node) orelse continue;
         const init_node = decl.ast.init_node.unwrap() orelse continue;
         if (init_node != node) continue;
@@ -174,7 +174,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
 
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (!isUndefinedNode(tree, node)) continue;
         try checkUndefined(ctx, tree, sema, &comparison_operands, node);
     }

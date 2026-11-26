@@ -49,7 +49,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
     const tree = &ctx.source.ast;
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) != .assign) continue;
         const lhs = tree.nodeData(node).node_and_node[0];
         if (tree.nodeTag(lhs) != .identifier) continue;

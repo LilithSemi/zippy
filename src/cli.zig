@@ -86,7 +86,7 @@ pub const RunArgs = struct {
     /// The real process environment. Only read by the builder-mode dispatch
     /// below (forwarded to `mode.run` as `base_env`, which spawns `zig
     /// build` needing a real `PATH` etc.), but -- like `stdin` above --
-    /// required on every `RunArgs` rather than optional: Zig 0.16's
+    /// required on every `RunArgs` rather than optional: Zig's
     /// `std.Io` interface has no accessor for "the current process's
     /// environment" (only `std.process.Init`, which only `main.zig` has,
     /// does), so making this optional would invite a caller to pass `null`

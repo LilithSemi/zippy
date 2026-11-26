@@ -1,7 +1,7 @@
-//! End-to-end test for the whole builder-mode chain, in one shot: embedded
-//! runner -> real `zig build --build-runner` -> manifest -> reachability
-//! walk -> lint + dead-file. Every other test in `build/` exercises one link
-//! of that chain in isolation (`runner_test.zig` the runner itself,
+//! End-to-end test for the whole builder-mode chain, in one shot: real
+//! `zig build --listen=-` -> manifest -> reachability walk -> lint +
+//! dead-file. Every other test in `build/` exercises one link of that chain
+//! in isolation (`bsp_test.zig` the protocol client,
 //! `reachable_test`/`dead_file.zig` the walks on a synthetic manifest,
 //! `mode.zig`'s own tests the pure helpers); this is the one that proves
 //! they actually fit together end to end, against a real `zig build` on a
@@ -194,11 +194,8 @@ test "mode.run: use_color=true adds ANSI escapes to both lint and dead_file outp
     try std.testing.expect(std.mem.indexOf(u8, plain.out, "dead_file") != null);
 }
 
-// Tier 2: the embedded runner now actually runs the project's `Step
-// .Compile`s (not just walks the graph for roots, as Tier 1 did) and
-// captures their real compiler-error bundle into the manifest's `errors[]`
-// -- see `runner.zig`'s `runSteps`/`collectErrors` and `manifest.zig`'s
-// `CompileError`. This proves `mode.run` actually renders those alongside
+// `bsp.zig` builds the project's compile steps and puts their compiler
+// errors into the manifest's `errors[]`. This proves `mode.run` actually renders those alongside
 // its existing AST lints, in the SAME run: `src/main.zig` below carries
 // both a planted `naming_convention` violation (an AST lint, found by the
 // existing static `Linter.run` pipeline) and a genuine type error (`const
@@ -453,8 +450,8 @@ fn git(io: std.Io, gpa: std.mem.Allocator, dir: []const u8, argv: []const []cons
     gpa.free(r.stderr);
 }
 
-// Task 4 (fix-mode wiring): `--fix` end to end through the REAL
-// builder-mode chain -- embedded runner -> manifest -> reachability ->
+// `--fix` end to end through the REAL
+// builder-mode chain -- build protocol -> manifest -> reachability ->
 // `unused_decl` lint -> `fix.apply` actually splicing the file on disk.
 // Every other test in this file proves a diagnostic FIRES; this one proves
 // `--fix` makes the dead code actually disappear from the file, using a
@@ -551,9 +548,9 @@ test "mode.run --fix: deletes a dead private fn from a clean git project, exit 0
     // this proves the same holds for a file that went through the REAL
     // builder-mode/`fix.apply` path end to end, not just the lint's direct
     // `fixOf()` test helper.
-    const after_z = try gpa.dupeZ(u8, after);
+    const after_z = try gpa.dupeSentinel(u8, after, 0);
     defer gpa.free(after_z);
-    var t = try std.zig.Ast.parse(gpa, after_z, .zig);
+    var t = try std.zig.Ast.parse(gpa, after_z, .{});
     defer t.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 0), t.errors.len);
 }

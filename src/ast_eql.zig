@@ -244,7 +244,7 @@ fn firstTwoVarDeclInits(tree: *const Ast) [2]Node.Index {
     var count: usize = 0;
     var idx: u32 = 0;
     while (idx < tree.nodes.len and count < 2) : (idx += 1) {
-        const node: Node.Index = @enumFromInt(idx);
+        const node: Node.Index = @fromBackingInt(@intCast(idx));
         const decl = tree.fullVarDecl(node) orelse continue;
         found[count] = decl.ast.init_node.unwrap().?;
         count += 1;
@@ -266,7 +266,7 @@ fn expectEqlSrc(gpa: std.mem.Allocator, src_text: []const u8, want: bool) !void 
 fn firstIfWithElse(tree: *const Ast) Ast.full.If {
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Node.Index = @enumFromInt(idx);
+        const node: Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) == .@"if") return tree.fullIf(node).?;
     }
     unreachable;

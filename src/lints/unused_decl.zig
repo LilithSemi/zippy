@@ -140,7 +140,7 @@ fn stringNodeEquals(tree: *const Ast, node: Ast.Node.Index, ident: []const u8) b
 fn nameInReflectionBuiltin(tree: *const Ast, ident: []const u8) bool {
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         const builtin_name = switch (tree.nodeTag(node)) {
             .builtin_call_two,
             .builtin_call_two_comma,
@@ -167,7 +167,7 @@ fn nameInReflectionBuiltin(tree: *const Ast, ident: []const u8) bool {
 fn nameIsMemberAccess(tree: *const Ast, decl_name: []const u8) bool {
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         if (tree.nodeTag(node) != .field_access) continue;
         const field_tok = tree.nodeData(node).node_and_token[1];
         if (std.mem.eql(u8, tree.tokenSlice(field_tok), decl_name)) return true;
@@ -434,9 +434,9 @@ test "unused_decl fix deletes the whole dead fn decl (result parses cleanly)" {
     defer gpa.free(after);
     try std.testing.expectEqualStrings("pub fn main() void {}\n", after);
     // and the result still parses:
-    const after_z = try gpa.dupeZ(u8, after);
+    const after_z = try gpa.dupeSentinel(u8, after, 0);
     defer gpa.free(after_z);
-    var t = try std.zig.Ast.parse(gpa, after_z, .zig);
+    var t = try std.zig.Ast.parse(gpa, after_z, .{});
     defer t.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 0), t.errors.len);
 }
@@ -448,9 +448,9 @@ test "unused_decl fix deletes the whole dead const decl (result parses cleanly)"
     const after = try std.mem.concat(gpa, u8, &.{ s[0..fx.start], fx.replacement, s[fx.end..] });
     defer gpa.free(after);
     try std.testing.expectEqualStrings("pub fn main() void {}\n", after);
-    const after_z = try gpa.dupeZ(u8, after);
+    const after_z = try gpa.dupeSentinel(u8, after, 0);
     defer gpa.free(after_z);
-    var t = try std.zig.Ast.parse(gpa, after_z, .zig);
+    var t = try std.zig.Ast.parse(gpa, after_z, .{});
     defer t.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 0), t.errors.len);
 }

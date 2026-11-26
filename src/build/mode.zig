@@ -1,26 +1,15 @@
 //! Builder-mode driver: the orchestrator behind bare `zippy` in a project
-//! that has a `build.zig`. Spawns `zig build` with the embedded
-//! `--build-runner` (`runner.zig`), reads the manifest it emits, walks
-//! `@import`/`@embedFile` reachability from the manifest's roots
-//! (`reachable.zig`), lints every reachable file under the project root
-//! (the existing `Source`/`Config`/`Linter`/`Diagnostic` pipeline), and adds
-//! a conservative `dead_file` diagnostic for every `.zig` file under the
-//! project root that's on disk but reachable from none of those roots
-//! (`dead_file.zig`).
+//! that has a `build.zig`. Drives `zig build --listen=-` through `bsp.zig`,
+//! walks `@import`/`@embedFile` reachability from the module roots it
+//! reports (`reachable.zig`), lints every reachable file under the project
+//! root, and adds a `dead_file` diagnostic for every `.zig` file under the
+//! project root that no root reaches (`dead_file.zig`).
 //!
-//! This is the "fat Zippy" half of the architecture: the embedded runner is
-//! deliberately std-only and minimal (see `runner.zig`'s own doc comment);
-//! everything that actually understands Zippy's lints, config, and
-//! diagnostics lives here instead, so the runner never has to change when a
-//! lint does.
-//!
-//! FAIL LOUD: if the child `zig build` invocation fails for any reason (bad
-//! `build.zig`, `zig` missing, a crash, a non-zero exit), this returns exit
-//! code 2 with the child's stderr forwarded -- there is deliberately no
-//! silent fallback to linting the raw file tree. A build that doesn't build
-//! is exactly the situation where Zippy must not pretend everything is fine.
+//! If `zig build` fails for any reason, this returns exit code 2 with the
+//! reason. It does not fall back to linting the raw file tree.
 const std = @import("std");
 const manifest = @import("manifest.zig");
+const bsp = @import("bsp.zig");
 const reachable = @import("reachable.zig");
 const dead_file = @import("dead_file.zig");
 const Source = @import("../Source.zig");
@@ -29,15 +18,6 @@ const Linter = @import("../Linter.zig");
 const Diagnostic = @import("../Diagnostic.zig");
 const cli = @import("../cli.zig");
 const fix = @import("../fix.zig");
-
-/// The `--build-runner` implementation, embedded into the `zippy` binary at
-/// compile time so it ships as a single static executable with no sidecar
-/// files. `run` writes these exact bytes out to a tmp file at runtime and
-/// hands that path to `zig build --build-runner`. See `runner.zig`'s own
-/// doc comment for why it has to be a near-standalone file (it can't
-/// `@import` any other Zippy module once it's compiled out-of-tree by the
-/// `zig` frontend).
-const runner_source = @embedFile("runner.zig");
 
 /// Bundles every argument `run` needs into one struct rather than six-plus
 /// positional parameters -- this codebase caps functions at five params
@@ -49,19 +29,9 @@ pub const RunArgs = struct {
     gpa: std.mem.Allocator,
     /// Absolute path to the directory containing the project's `build.zig`.
     project_root: []const u8,
-    /// Extra arguments forwarded verbatim to the spawned `zig build`
-    /// invocation (e.g. `-Dfoo=bar`); the embedded runner only understands
-    /// `-D` itself (see `runner.zig`), everything else is parsed just far
-    /// enough to be skipped.
+    /// Forwarded to `zig build`, for example `-Dfoo=bar`.
     build_args: []const []const u8,
-    /// The real process environment the spawned `zig build` should inherit,
-    /// with `ZIPPY_MANIFEST` added on top by `run`. Threaded in from the
-    /// caller rather than fetched here because Zig 0.16's `std.Io` interface
-    /// (unlike `std.process.Init`) has no accessor for "the current
-    /// process's environment" -- only whichever `main` received it from the
-    /// runtime does. Passing `null` instead (asking `std.process.run` to
-    /// just inherit the parent's environment untouched) isn't an option
-    /// either: there would be no way to add `ZIPPY_MANIFEST` on top.
+    /// Environment for the spawned `zig build`.
     base_env: *const std.process.Environ.Map,
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
@@ -121,7 +91,7 @@ const MergedDiag = struct {
 ///   1 - at least one `.@"error"`-severity diagnostic fired (a real lint
 ///       finding, or a `dead_file` whose resolved severity is `.@"error"`).
 ///   2 - Zippy itself failed: the child `zig build` failed or couldn't be
-///       spawned, the manifest was missing/unparseable, the project root
+///       spawned, the build protocol broke, the project root
 ///       vanished, a file it needed to read became unreadable mid-run, or --
 ///       with `--fix` -- `fix.apply` itself failed to read/write a file it
 ///       had already decided to touch.
@@ -138,90 +108,24 @@ const MergedDiag = struct {
 /// every `.@"error"` diagnostic counts, fixed or not -- so a partially
 /// applied `--fix` run never reports a falsely-clean exit code.
 pub fn run(a: RunArgs) !u8 {
-    const tmp_base = a.base_env.get("TMPDIR") orelse "/tmp";
-    var random_bytes: [12]u8 = undefined;
-    a.io.random(&random_bytes);
-    var name_buf: [std.base64.url_safe.Encoder.calcSize(random_bytes.len)]u8 = undefined;
-    const name = std.base64.url_safe.Encoder.encode(&name_buf, &random_bytes);
+    var arena_state: std.heap.ArenaAllocator = .init(a.gpa);
+    defer arena_state.deinit();
 
-    const tmp_dir_path = try std.fmt.allocPrint(a.gpa, "{s}/zippy-{s}", .{ tmp_base, name });
-    defer a.gpa.free(tmp_dir_path);
-    std.Io.Dir.cwd().createDirPath(a.io, tmp_dir_path) catch |err| {
-        try a.stderr.print("zippy: failed to create temp dir: {s}\n", .{@errorName(err)});
-        return 2;
-    };
-    // Best-effort: a scratch tmp dir failing to delete (e.g. it was already
-    // removed by something else) must never turn a successful lint run into
-    // a failure -- matches `std.testing.tmpDir`'s own `TmpDir.cleanup`. Only
-    // registered once `createDirPath` above has actually succeeded, so a
-    // create failure never schedules a `deleteTree` on a directory that was
-    // never made.
-    defer std.Io.Dir.cwd().deleteTree(a.io, tmp_dir_path) catch {};
-
-    const runner_abs = try std.fs.path.join(a.gpa, &.{ tmp_dir_path, "zippy_runner.zig" });
-    defer a.gpa.free(runner_abs);
-    const runner_file: std.Io.Dir.WriteFileOptions = .{
-        .sub_path = runner_abs,
-        .data = runner_source,
-    };
-    std.Io.Dir.cwd().writeFile(a.io, runner_file) catch |err| {
-        try a.stderr.print("zippy: failed to write build runner: {s}\n", .{@errorName(err)});
-        return 2;
-    };
-
-    const manifest_abs = try std.fs.path.join(a.gpa, &.{ tmp_dir_path, "manifest.json" });
-    defer a.gpa.free(manifest_abs);
-
-    var env_map = try a.base_env.clone(a.gpa);
-    defer env_map.deinit();
-    try env_map.put("ZIPPY_MANIFEST", manifest_abs);
-
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(a.gpa);
-    try argv.appendSlice(a.gpa, &.{ "zig", "build", "--build-runner", runner_abs });
-    try argv.appendSlice(a.gpa, a.build_args);
-
-    const result = std.process.run(a.gpa, a.io, .{
-        .argv = argv.items,
-        .cwd = .{ .path = a.project_root },
-        .environ_map = &env_map,
+    const collected = bsp.collect(a.io, arena_state.allocator(), .{
+        .project_root = a.project_root,
+        .build_args = a.build_args,
+        .environ_map = a.base_env,
     }) catch |err| {
-        try a.stderr.print(
-            "zippy: failed to run 'zig build --build-runner': {s}\n",
-            .{@errorName(err)},
-        );
+        try a.stderr.print("zippy: 'zig build --listen=-' failed: {s}\n", .{@errorName(err)});
         return 2;
     };
-    defer a.gpa.free(result.stdout);
-    defer a.gpa.free(result.stderr);
-
-    // FAIL LOUD: no fallback to linting the raw file tree if the project
-    // doesn't actually build -- see this file's doc comment.
-    const exit_code: ?u8 = switch (result.term) {
-        .exited => |code| code,
-        else => null,
+    const built = switch (collected) {
+        .manifest => |m| m,
+        .failed => |message| {
+            try a.stderr.writeAll(message);
+            return 2;
+        },
     };
-    if (exit_code != 0) {
-        try a.stderr.writeAll(result.stderr);
-        return 2;
-    }
-
-    const manifest_bytes = std.Io.Dir.cwd().readFileAlloc(
-        a.io,
-        manifest_abs,
-        a.gpa,
-        .unlimited,
-    ) catch |err| {
-        try a.stderr.print("zippy: could not read build manifest: {s}\n", .{@errorName(err)});
-        return 2;
-    };
-    defer a.gpa.free(manifest_bytes);
-
-    var parsed = manifest.parse(a.gpa, manifest_bytes) catch |err| {
-        try a.stderr.print("zippy: could not parse build manifest: {s}\n", .{@errorName(err)});
-        return 2;
-    };
-    defer parsed.deinit();
 
     // `reachable.collect`'s keys are canonical (symlink-resolved) paths, so
     // `project_root` must be canonicalized the same way before it's used as
@@ -241,7 +145,7 @@ pub fn run(a: RunArgs) !u8 {
     // than merely filtered out downstream: Zippy must never lint dependency
     // code, and starting the reachability walk from a dependency root at all
     // would pull its files into the reachable set.
-    const root_paths = try projectRootPaths(a.gpa, parsed.value.roots);
+    const root_paths = try projectRootPaths(a.gpa, built.roots);
     defer a.gpa.free(root_paths);
 
     // Cross-module `@import`s name a module (e.g. `@import("uefi")`), never a
@@ -262,7 +166,6 @@ pub fn run(a: RunArgs) !u8 {
         try a.stderr.print("zippy: config error: {s}\n", .{@errorName(err)});
         return 2;
     };
-    defer cfg.deinit(a.gpa);
 
     var tracking: ErrorTracking = .{};
 
@@ -317,7 +220,7 @@ pub fn run(a: RunArgs) !u8 {
         a.gpa,
         a.project_root,
         &reached,
-        parsed.value.dep_dirs,
+        built.dep_dirs,
     ) catch |err| {
         try a.stderr.print("zippy: dead-file scan failed: {s}\n", .{@errorName(err)});
         return 2;
@@ -338,7 +241,7 @@ pub fn run(a: RunArgs) !u8 {
     // failing code isn't something the project's author can edit directly;
     // silently dropping it just because it's outside `project_root` would
     // hide a real break behind a false "clean" report.
-    for (parsed.value.errors) |ce| {
+    for (built.errors) |ce| {
         try merged.append(a.gpa, .{
             .diag = compileErrorToDiagnostic(ce),
             .kind = .compile_error,
@@ -514,10 +417,10 @@ fn renderUnreadableCompileError(
 /// matter where that dependency happens to live on disk (a dependency can be
 /// vendored UNDER `project_root` itself, e.g. `zig-pkg/uefi-<hash>/`, which a
 /// path-prefix filter alone can't distinguish from project code -- see
-/// `runner.zig`'s `dependencyDir` for how `is_dependency` is actually
+/// `bsp.zig`'s `Graph.resolve` for how `is_dependency` is actually
 /// determined). Returns a slice the caller owns (`gpa.free` it); the
 /// individual `path` strings are borrowed from `roots` and outlive this call
-/// via the manifest's own arena/parsed-json ownership, so they aren't duped.
+/// via the arena that owns the manifest, so they aren't duped.
 fn projectRootPaths(gpa: std.mem.Allocator, roots: []const manifest.Root) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     errdefer out.deinit(gpa);
@@ -613,7 +516,7 @@ test "projectRootPaths: skips dependency roots, even one vendored under project_
         // dir like `zig-pkg/uefi-<hash>/`, not `~/.cache`) -- the exact case
         // a path-prefix filter alone can't catch, since it physically sits
         // inside `/proj`. `is_dependency` (set by the build graph, not the
-        // path -- see `runner.zig`'s `dependencyDir`) is what this function
+        // path -- see `bsp.zig`'s `Graph.resolve`) is what this function
         // actually keys off.
         .{
             .path = "/proj/zig-pkg/uefi-abc123/uefi.zig",
@@ -670,7 +573,6 @@ test "deadFileDiagnostic: default config resolves dead_file to warn" {
 test "deadFileDiagnostic: severity .off yields null (no diagnostic at all)" {
     const gpa = std.testing.allocator;
     var cfg = try Config.loadFromSlice(gpa, ".{ .groups = .{ .unused = .off } }");
-    defer cfg.deinit(gpa);
     try std.testing.expect(deadFileDiagnostic("/proj/stray.zig", &cfg) == null);
 }
 

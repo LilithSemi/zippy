@@ -167,15 +167,15 @@ pub fn default() Config {
 /// dropped, so a typo in a user's config is caught immediately rather than
 /// silently doing nothing.
 pub fn loadFromSlice(gpa: std.mem.Allocator, source: [:0]const u8) !Config {
-    return std.zon.parse.fromSlice(Config, gpa, source, null, .{});
-}
-
-/// `Config` (as parsed above) contains no pointers, so there is nothing
-/// heap-allocated to release; `std.zon.parse.free` is a safe no-op traversal
-/// here. Called anyway so callers don't need to know that detail and the
-/// deinit stays correct if fields ever grow pointers (e.g. slices/strings).
-pub fn deinit(self: *Config, gpa: std.mem.Allocator) void {
-    std.zon.parse.free(gpa, self.*);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var diagnostics: std.zon.parse.Diagnostics = .{ .errors = &.{} };
+    return std.zon.parse.fromSliceNoAlloc(Config, .{
+        .gpa = gpa,
+        .arena = arena.allocator(),
+        .source = source,
+        .diagnostics = &diagnostics,
+    });
 }
 
 /// Resolves the effective severity for `lint_name`. Order is deliberate:
@@ -289,7 +289,6 @@ test "zippy.zon omitting .groups still defaults correctness to error, like defau
         \\}
     ;
     var cfg = try Config.loadFromSlice(gpa, src);
-    defer cfg.deinit(gpa);
     try std.testing.expectEqual(
         Severity.@"error",
         cfg.severityFor("discarded_error", .correctness),
@@ -313,7 +312,6 @@ test "loadFromSlice applies group and per-lint overrides" {
         \\}
     ;
     var cfg = try Config.loadFromSlice(gpa, src);
-    defer cfg.deinit(gpa);
     try std.testing.expectEqual(Severity.off, cfg.severityFor("naming_convention", .style));
     try std.testing.expectEqual(
         Severity.@"error",
@@ -330,7 +328,6 @@ test "unused group resolves via default then override" {
 
     const src = ".{ .groups = .{ .unused = .off } }";
     var cfg = try Config.loadFromSlice(gpa, src);
-    defer cfg.deinit(gpa);
     try std.testing.expectEqual(Severity.off, cfg.severityFor("dead_file", .unused));
 }
 
@@ -343,7 +340,6 @@ test "a per-lint dead_file override silences it without silencing unused_decl" {
     const gpa = std.testing.allocator;
     const src = ".{ .lints = .{ .dead_file = .{ .severity = .off } } }";
     var cfg = try Config.loadFromSlice(gpa, src);
-    defer cfg.deinit(gpa);
     try std.testing.expectEqual(Severity.off, cfg.severityFor("dead_file", .unused));
     try std.testing.expectEqual(Severity.warn, cfg.severityFor("unused_decl", .unused));
 }
@@ -374,7 +370,6 @@ test "no_print allow_tests parses from zon" {
     const gpa = std.testing.allocator;
     const src = ".{ .lints = .{ .no_print = .{ .allow_tests = false } } }";
     var cfg = try Config.loadFromSlice(gpa, src);
-    defer cfg.deinit(gpa);
     try std.testing.expect(!cfg.noPrintAllowTests());
 }
 
@@ -415,7 +410,6 @@ test "unsafe_undefined allow_arrays parses from zon" {
     const gpa = std.testing.allocator;
     const src = ".{ .lints = .{ .unsafe_undefined = .{ .allow_arrays = false } } }";
     var cfg = try Config.loadFromSlice(gpa, src);
-    defer cfg.deinit(gpa);
     try std.testing.expect(!cfg.unsafeUndefinedAllowArrays());
     try std.testing.expect(cfg.unsafeUndefinedAllowTests());
     try std.testing.expect(cfg.unsafeUndefinedAllowDestructors());
@@ -429,7 +423,6 @@ test "suppressed_errors exemptions parse from zon" {
         \\} } }
     ;
     var cfg = try Config.loadFromSlice(gpa, src);
-    defer cfg.deinit(gpa);
     try std.testing.expect(cfg.suppressedErrorsExemptTests());
     try std.testing.expect(!cfg.suppressedErrorsExemptWriters());
     try std.testing.expect(cfg.suppressedErrorsExemptDefers());

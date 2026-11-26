@@ -151,7 +151,7 @@ fn expand(
 
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         switch (tree.nodeTag(node)) {
             .builtin_call_two, .builtin_call_two_comma, .builtin_call, .builtin_call_comma => {},
             else => continue,

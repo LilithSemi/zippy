@@ -31,7 +31,7 @@ pub fn load(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !Source {
         0, // sentinel
     );
     errdefer gpa.free(bytes);
-    const ast = try std.zig.Ast.parse(gpa, bytes, .zig);
+    const ast = try std.zig.Ast.parse(gpa, bytes, .{});
     return .{ .path = path, .bytes = bytes, .ast = ast };
 }
 
@@ -41,9 +41,9 @@ pub fn load(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !Source {
 /// duped (with a sentinel) rather than borrowed, so the returned `Source`
 /// owns its memory exactly like `load` does and `deinit` works identically.
 pub fn loadFromSlice(gpa: std.mem.Allocator, path: []const u8, bytes: []const u8) !Source {
-    const owned = try gpa.dupeZ(u8, bytes);
+    const owned = try gpa.dupeSentinel(u8, bytes, 0);
     errdefer gpa.free(owned);
-    const ast = try std.zig.Ast.parse(gpa, owned, .zig);
+    const ast = try std.zig.Ast.parse(gpa, owned, .{});
     return .{ .path = path, .bytes = owned, .ast = ast };
 }
 

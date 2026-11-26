@@ -64,7 +64,7 @@ pub fn run(ctx: *Context) Context.LintError!void {
     var fn_buf: [1]Ast.Node.Index = undefined;
     var idx: u32 = 0;
     while (idx < tree.nodes.len) : (idx += 1) {
-        const node: Ast.Node.Index = @enumFromInt(idx);
+        const node: Ast.Node.Index = @fromBackingInt(@intCast(idx));
         // `fn_decl` (a fn with a body) delegates `fullFnProto` to its
         // wrapped proto node -- which is *also* a standalone node in the
         // tree, visited separately by this same loop. Skip `fn_decl` here so
